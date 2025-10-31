@@ -16,14 +16,55 @@ logger = logging.getLogger(__name__)
 class SessionManager:
     def __init__(self, session_dir: str):
         self.session_dir = Path(session_dir)
-        self.session_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            # Create the main sessions directory with explicit permissions
+            self.session_dir.mkdir(parents=True, exist_ok=True, mode=0o777)
+            # Set permissions explicitly after creation
+            os.chmod(self.session_dir, 0o777)
+            logger.info(f"Session directory created/verified at: {self.session_dir}")
+            logger.info(f"Session directory permissions: {oct(os.stat(self.session_dir).st_mode)[-3:]}")
+            logger.info(f"Session directory owner: UID={os.stat(self.session_dir).st_uid}, GID={os.stat(self.session_dir).st_gid}")
+            logger.info(f"Current process: UID={os.getuid()}, GID={os.getgid()}")
+        except PermissionError as e:
+            logger.error(f"Permission denied creating session directory: {e}")
+            logger.error(f"Trying alternative location in /tmp")
+            # Fallback to /tmp if main directory fails
+            self.session_dir = Path(f"/tmp/auth_azure_sessions_{os.getuid()}")
+            self.session_dir.mkdir(parents=True, exist_ok=True, mode=0o777)
+            logger.info(f"Using fallback session directory: {self.session_dir}")
+        except Exception as e:
+            logger.error(f"Failed to create session directory: {e}")
+            raise
+
         self._sessions_cache: Dict[str, dict] = {}
         self._lock = Lock()
 
     def create_session_dir(self, session_id: str) -> Path:
         """Create a directory for the session"""
         session_path = self.session_dir / session_id
-        session_path.mkdir(parents=True, exist_ok=True)
+        try:
+            session_path.mkdir(parents=True, exist_ok=True, mode=0o777)
+            # Set permissions explicitly after creation
+            os.chmod(session_path, 0o777)
+
+            # Also create the .azure subdirectory that Azure CLI will use
+            azure_dir = session_path / ".azure"
+            azure_dir.mkdir(parents=True, exist_ok=True, mode=0o777)
+            os.chmod(azure_dir, 0o777)
+
+            logger.info(f"Created session directory: {session_path} with permissions {oct(os.stat(session_path).st_mode)[-3:]}")
+        except PermissionError as e:
+            logger.error(f"Permission denied creating session directory {session_path}: {e}")
+            # Try to diagnose the issue
+            parent = session_path.parent
+            logger.error(f"Parent directory {parent} exists: {parent.exists()}")
+            if parent.exists():
+                logger.error(f"Parent directory permissions: {oct(os.stat(parent).st_mode)[-3:]}")
+                logger.error(f"Parent directory owner: UID={os.stat(parent).st_uid}, GID={os.stat(parent).st_gid}")
+            raise
+        except Exception as e:
+            logger.error(f"Failed to create session directory {session_path}: {e}")
+            raise
         return session_path
 
     def get_session_path(self, session_id: str) -> Path:

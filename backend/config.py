@@ -20,6 +20,8 @@ class Settings(BaseSettings):
 
     # Session Management
     SESSION_DIR: str = Field(default="./sessions", env="SESSION_DIR")
+    # Alternative session directory if main fails (e.g., /tmp/sessions)
+    ALT_SESSION_DIR: Optional[str] = Field(default=None, env="ALT_SESSION_DIR")
     SESSION_TIMEOUT_HOURS: int = Field(default=24, env="SESSION_TIMEOUT_HOURS")
 
     # Token Management

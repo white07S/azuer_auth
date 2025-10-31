@@ -29,6 +29,13 @@ class AzureAuthService:
         env = os.environ.copy()
         env["AZURE_CONFIG_DIR"] = str(session_dir)
 
+        # Ensure Azure CLI can write to the session directory
+        # Set HOME to session dir as fallback for Azure CLI
+        env["HOME"] = str(session_dir)
+
+        logger.info(f"Starting auth for session {session_id} in directory {session_dir}")
+        logger.info(f"AZURE_CONFIG_DIR set to: {env['AZURE_CONFIG_DIR']}")
+
         try:
             # Start the az login process with device code
             proc = await asyncio.create_subprocess_exec(
