@@ -192,6 +192,12 @@ async def send_chat_message(message: ChatMessage):
         if await token_manager.needs_refresh(message.session_id):
             await auth_service.refresh_session_token(message.session_id)
 
+        # Store user message in history
+        session_manager.store_chat_message(message.session_id, {
+            "role": "user",
+            "content": message.message
+        })
+
         # Get response from OpenAI
         response = await openai_service.get_chat_response(
             session_id=message.session_id,
@@ -199,11 +205,52 @@ async def send_chat_message(message: ChatMessage):
             context=message.context
         )
 
+        # Store assistant response in history
+        session_manager.store_chat_message(message.session_id, {
+            "role": "assistant",
+            "content": response.get("message")
+        })
+
         return ChatResponse(**response)
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Failed to process chat message: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/chat/history/{session_id}")
+async def get_chat_history(session_id: str, limit: int = 50):
+    """Get chat history for a session"""
+    try:
+        # Verify session exists
+        session_data = session_manager.get_session(session_id)
+        if not session_data:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        # Get chat history
+        history = session_manager.get_chat_history(session_id, limit)
+        return JSONResponse(content=history)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get chat history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/chat/history/{session_id}")
+async def clear_chat_history(session_id: str):
+    """Clear chat history for a session"""
+    try:
+        # Verify session exists
+        session_data = session_manager.get_session(session_id)
+        if not session_data:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        # Clear chat history
+        session_data["chat_history"] = []
+        session_manager.save_session(session_id, session_data)
+        return JSONResponse(content={"status": "success"})
+    except Exception as e:
+        logger.error(f"Failed to clear chat history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.websocket("/ws/{session_id}")
@@ -230,6 +277,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 if await token_manager.needs_refresh(session_id):
                     await auth_service.refresh_session_token(session_id)
 
+                # Store user message in history
+                session_manager.store_chat_message(session_id, {
+                    "role": "user",
+                    "content": message.get("message")
+                })
+
                 # Get OpenAI response
                 try:
                     response = await openai_service.get_chat_response(
@@ -237,6 +290,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                         message=message.get("message"),
                         context=message.get("context")
                     )
+
+                    # Store assistant response in history
+                    session_manager.store_chat_message(session_id, {
+                        "role": "assistant",
+                        "content": response.get("message")
+                    })
 
                     await websocket.send_text(json.dumps({
                         "type": "response",

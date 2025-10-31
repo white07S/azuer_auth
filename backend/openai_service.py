@@ -38,24 +38,46 @@ class AzureOpenAIService:
         try:
             # Set Azure config directory to session-specific folder
             session_dir = Path(self.settings.SESSION_DIR) / session_id
-            env = os.environ.copy()
-            env["AZURE_CONFIG_DIR"] = str(session_dir)
 
-            # Create credential using Azure CLI with tenant ID
-            cred = AzureCliCredential(
-                tenant_id=self.settings.TENANT_ID,
-                process_timeout=30
-            )
+            # IMPORTANT: Set the environment variable for the current process
+            # so that AzureCliCredential can find the session-specific Azure CLI config
+            old_azure_config = os.environ.get("AZURE_CONFIG_DIR")
+            os.environ["AZURE_CONFIG_DIR"] = str(session_dir)
+
+            try:
+                # Create credential using Azure CLI with tenant ID
+                # It will now use the session-specific Azure config directory
+                cred = AzureCliCredential(
+                    tenant_id=self.settings.TENANT_ID,
+                    process_timeout=30
+                )
+            finally:
+                # Restore original environment variable
+                if old_azure_config:
+                    os.environ["AZURE_CONFIG_DIR"] = old_azure_config
+                elif "AZURE_CONFIG_DIR" in os.environ:
+                    del os.environ["AZURE_CONFIG_DIR"]
 
             # Token provider function that uses the session's credentials
             async def token_provider():
                 try:
-                    # Get token from Azure CLI credential
-                    token = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda: cred.get_token("https://cognitiveservices.azure.com/.default")
-                    )
-                    return token.token
+                    # Ensure Azure config directory is set for token retrieval
+                    old_config = os.environ.get("AZURE_CONFIG_DIR")
+                    os.environ["AZURE_CONFIG_DIR"] = str(session_dir)
+
+                    try:
+                        # Get token from Azure CLI credential
+                        token = await asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: cred.get_token("https://cognitiveservices.azure.com/.default")
+                        )
+                        return token.token
+                    finally:
+                        # Restore original environment
+                        if old_config:
+                            os.environ["AZURE_CONFIG_DIR"] = old_config
+                        elif "AZURE_CONFIG_DIR" in os.environ:
+                            del os.environ["AZURE_CONFIG_DIR"]
                 except Exception as e:
                     logger.error(f"Failed to get token for OpenAI: {e}")
                     # Fallback to stored token
