@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     # Allowed Roles (comma-separated)
     ALLOWED_ROLES: str = Field(default="", env="ALLOWED_ROLES")
 
+    # Azure AD group IDs for role resolution
+    AZURE_ADMIN_GROUP_IDS: str = Field(default="", env="AZURE_ADMIN_GROUP_IDS")
+    AZURE_USER_GROUP_IDS: str = Field(default="", env="AZURE_USER_GROUP_IDS")
+
     # CORS Settings
     ALLOWED_ORIGINS: str = Field(default="http://localhost:3000", env="ALLOWED_ORIGINS")
 
@@ -76,6 +80,37 @@ class Settings(BaseSettings):
         if not self.ALLOWED_ORIGINS:
             return ["http://localhost:3000"]
         return [origin.strip() for origin in self.ALLOWED_ORIGINS.split(",")]
+
+    @property
+    def role_group_mapping(self) -> dict:
+        """Return mapping of roles to Azure AD group IDs"""
+        role_mapping = {
+            "admin": [
+                gid.strip()
+                for gid in self.AZURE_ADMIN_GROUP_IDS.split(",")
+                if gid.strip()
+            ],
+            "user": [
+                gid.strip()
+                for gid in self.AZURE_USER_GROUP_IDS.split(",")
+                if gid.strip()
+            ],
+        }
+
+        # Merge in legacy ROLE_MAPPINGS if provided
+        if self.ROLE_MAPPINGS:
+            for mapping in self.ROLE_MAPPINGS.split(","):
+                if ":" in mapping:
+                    group_id, role_name = mapping.split(":", 1)
+                    role_name = role_name.strip()
+                    group_id = group_id.strip()
+                    if role_name not in role_mapping:
+                        role_mapping[role_name] = []
+                    if group_id:
+                        role_mapping[role_name].append(group_id)
+
+        # Remove empty role entries
+        return {role: gids for role, gids in role_mapping.items() if gids}
 
     def validate_settings(self):
         """Validate required settings"""

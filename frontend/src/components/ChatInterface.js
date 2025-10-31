@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Send, Loader, AlertCircle } from 'lucide-react';
 import MessageList from './MessageList';
-import { chatAPI } from '../utils/api';
+import { chatAPI } from '../api';
 
 const ChatInterface = ({ sessionId }) => {
   const [messages, setMessages] = useState([]);
@@ -15,6 +15,10 @@ const ChatInterface = ({ sessionId }) => {
 
   useEffect(() => {
     // Connect to WebSocket
+    if (!sessionId) {
+      return undefined;
+    }
+
     connectWebSocket();
 
     // Load chat history
@@ -32,6 +36,10 @@ const ChatInterface = ({ sessionId }) => {
   }, [messages]);
 
   const connectWebSocket = () => {
+    if (!sessionId) {
+      return;
+    }
+
     const wsUrl = `ws://localhost:8000/ws/${sessionId}`;
     wsRef.current = new WebSocket(wsUrl);
 
@@ -83,6 +91,10 @@ const ChatInterface = ({ sessionId }) => {
   };
 
   const loadChatHistory = async () => {
+    if (!sessionId) {
+      return;
+    }
+
     try {
       const history = await chatAPI.getChatHistory(sessionId);
       setMessages(history || []);
@@ -101,6 +113,11 @@ const ChatInterface = ({ sessionId }) => {
 
   const sendMessage = async () => {
     if (!inputMessage.trim() || isLoading) return;
+
+    if (!sessionId) {
+      setError('Session is not ready. Please sign in again.');
+      return;
+    }
 
     const userMessage = {
       role: 'user',

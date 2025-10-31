@@ -10,10 +10,10 @@ from pathlib import Path
 from typing import Dict, Optional, List
 import logging
 
-from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, Header, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import uvicorn
 
 from auth_service import AzureAuthService
@@ -104,6 +104,52 @@ class ChatResponse(BaseModel):
     timestamp: datetime
     usage: Optional[dict] = None
 
+class TokenData(BaseModel):
+    session_id: str
+    email: Optional[str] = None
+    roles: List[str] = Field(default_factory=list)
+    user_name: Optional[str] = None
+
+async def get_current_user(x_session_id: Optional[str] = Header(default=None)) -> TokenData:
+    """Retrieve the current user based on the X-Session-ID header"""
+    if not x_session_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session header missing")
+
+    session_data = session_manager.get_session(x_session_id)
+    if not session_data or session_data.get("status") != "completed":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session")
+
+    user_info = session_data.get("user_info", {})
+    return TokenData(
+        session_id=x_session_id,
+        email=user_info.get("email"),
+        roles=user_info.get("roles", []),
+        user_name=user_info.get("user_name"),
+    )
+
+class RoleChecker:
+    """Dependency class to check if user has required roles."""
+
+    def __init__(self, allowed_roles: List[str]):
+        self.allowed_roles = allowed_roles
+
+    async def __call__(
+        self, current_user: TokenData = Depends(get_current_user)
+    ) -> TokenData:
+        """Check if user has any of the required roles."""
+        if not any(role in current_user.roles for role in self.allowed_roles):
+            logger.warning(
+                "User %s with roles %s attempted to access resource requiring %s",
+                current_user.email,
+                current_user.roles,
+                self.allowed_roles,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Insufficient permissions. Required roles: {', '.join(self.allowed_roles)}",
+            )
+        return current_user
+
 # API Endpoints
 @app.post("/api/auth/start", response_model=AuthStartResponse)
 async def start_authentication(request: AuthStartRequest):
@@ -126,9 +172,15 @@ async def check_auth_status(session_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/auth/complete", response_model=AuthCompleteResponse)
-async def complete_authentication(request: AuthCompleteRequest):
+async def complete_authentication(
+    request: AuthCompleteRequest,
+    current_user: TokenData = Depends(get_current_user)
+):
     """Complete the authentication and get user info"""
     try:
+        if request.session_id != current_user.session_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Session mismatch")
+
         result = await auth_service.complete_auth(request.session_id)
         return AuthCompleteResponse(**result)
     except Exception as e:
@@ -136,9 +188,15 @@ async def complete_authentication(request: AuthCompleteRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/auth/refresh/{session_id}")
-async def refresh_token(session_id: str):
+async def refresh_token(
+    session_id: str,
+    current_user: TokenData = Depends(RoleChecker(["admin", "user"]))
+):
     """Refresh the authentication token for a session"""
     try:
+        if session_id != current_user.session_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Session mismatch")
+
         result = await auth_service.refresh_session_token(session_id)
         return JSONResponse(content=result)
     except Exception as e:
@@ -146,9 +204,15 @@ async def refresh_token(session_id: str):
         raise HTTPException(status_code=401, detail="Failed to refresh token")
 
 @app.post("/api/auth/logout/{session_id}")
-async def logout(session_id: str):
+async def logout(
+    session_id: str,
+    current_user: TokenData = Depends(RoleChecker(["admin", "user"]))
+):
     """Logout and clean up session"""
     try:
+        if session_id != current_user.session_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Session mismatch")
+
         await auth_service.logout(session_id)
         return JSONResponse(content={"status": "success"})
     except Exception as e:
@@ -156,9 +220,15 @@ async def logout(session_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/session/{session_id}/info")
-async def get_session_info(session_id: str):
+async def get_session_info(
+    session_id: str,
+    current_user: TokenData = Depends(get_current_user)
+):
     """Get session information"""
     try:
+        if session_id != current_user.session_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Session mismatch")
+
         session_data = session_manager.get_session(session_id)
         if not session_data:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -166,9 +236,9 @@ async def get_session_info(session_id: str):
         # Remove sensitive information
         safe_data = {
             "session_id": session_data.get("session_id"),
-            "user_email": session_data.get("email"),
-            "user_name": session_data.get("user_name"),
-            "roles": session_data.get("roles", []),
+            "user_email": session_data.get("user_info", {}).get("email"),
+            "user_name": session_data.get("user_info", {}).get("user_name"),
+            "roles": session_data.get("user_info", {}).get("roles", []),
             "created_at": session_data.get("created_at"),
             "token_expires_at": session_data.get("token_expires_at")
         }
@@ -180,9 +250,15 @@ async def get_session_info(session_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/chat/message", response_model=ChatResponse)
-async def send_chat_message(message: ChatMessage):
+async def send_chat_message(
+    message: ChatMessage,
+    current_user: TokenData = Depends(RoleChecker(["admin", "user"]))
+):
     """Send a message to Azure OpenAI"""
     try:
+        if message.session_id != current_user.session_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Session mismatch")
+
         # Verify session
         session_data = session_manager.get_session(message.session_id)
         if not session_data:
@@ -219,9 +295,16 @@ async def send_chat_message(message: ChatMessage):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/chat/history/{session_id}")
-async def get_chat_history(session_id: str, limit: int = 50):
+async def get_chat_history(
+    session_id: str,
+    limit: int = 50,
+    current_user: TokenData = Depends(RoleChecker(["admin", "user"]))
+):
     """Get chat history for a session"""
     try:
+        if session_id != current_user.session_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Session mismatch")
+
         # Verify session exists
         session_data = session_manager.get_session(session_id)
         if not session_data:
@@ -237,9 +320,15 @@ async def get_chat_history(session_id: str, limit: int = 50):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/chat/history/{session_id}")
-async def clear_chat_history(session_id: str):
+async def clear_chat_history(
+    session_id: str,
+    current_user: TokenData = Depends(RoleChecker(["admin"]))
+):
     """Clear chat history for a session"""
     try:
+        if session_id != current_user.session_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Session mismatch")
+
         # Verify session exists
         session_data = session_manager.get_session(session_id)
         if not session_data:

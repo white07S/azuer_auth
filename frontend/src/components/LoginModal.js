@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Copy, CheckCircle } from 'lucide-react';
-import { authAPI } from '../utils/api';
+import { authAPI } from '../api';
 
 const LoginModal = ({ isOpen, onClose, onLoginSuccess, onError }) => {
   const [step, setStep] = useState('idle'); // idle, loading, code, polling, success, error

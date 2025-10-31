@@ -24,9 +24,7 @@ class AzureOpenAIService:
         """Get or create an Azure OpenAI client for a session"""
         # Check if client exists and is valid
         if session_id in self._clients:
-            # Validate token is still good
-            if await self.token_manager.validate_token(session_id):
-                return self._clients[session_id]
+            return self._clients[session_id]
 
         # Create new client with user-specific credentials
         client = await self._create_client(session_id)

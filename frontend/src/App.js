@@ -1,104 +1,181 @@
-import React, { useState, useEffect } from 'react';
-import LoginModal from './components/LoginModal';
-import ChatInterface from './components/ChatInterface';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import {
+  BrowserRouter as Router,
+  Routes,
+  Route,
+  Navigate,
+  useLocation,
+  useNavigate,
+} from 'react-router-dom';
+
 import Header from './components/Header';
-import { authAPI } from './utils/api';
+import LoginModal from './components/LoginModal';
+import { authAPI } from './api';
+import { NAVIGATION_ITEMS, UNAUTHORIZED_ROUTE } from './config/navigation';
+import { LoggedOutPage, UnauthorizedPage } from './pages';
 import './App.css';
 
-function App() {
+const AppShell = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [sessionInfo, setSessionInfo] = useState(null);
+  const [sessionId, setSessionId] = useState(() => localStorage.getItem('sessionId'));
   const [loading, setLoading] = useState(true);
+  const refreshIntervalRef = useRef(null);
 
-  useEffect(() => {
-    checkSession();
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  const stopTokenRefreshMonitor = useCallback(() => {
+    if (refreshIntervalRef.current) {
+      clearInterval(refreshIntervalRef.current);
+      refreshIntervalRef.current = null;
+    }
   }, []);
 
-  const checkSession = async () => {
+  const handleLogout = useCallback(async () => {
     try {
-      // Check if there's a stored session
-      const storedSession = localStorage.getItem('sessionId');
-      if (storedSession) {
-        const info = await authAPI.getSessionInfo(storedSession);
-        if (info) {
-          setSessionInfo(info);
-          setIsAuthenticated(true);
-
-          // Start token refresh monitoring
-          startTokenRefreshMonitor(storedSession);
-        } else {
-          localStorage.removeItem('sessionId');
-        }
-      }
-    } catch (error) {
-      console.error('Failed to check session:', error);
-      localStorage.removeItem('sessionId');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const startTokenRefreshMonitor = (sessionId) => {
-    // Check token status every 30 seconds
-    const interval = setInterval(async () => {
-      try {
-        const needsRefresh = await authAPI.checkTokenExpiry(sessionId);
-        if (needsRefresh) {
-          await authAPI.refreshToken(sessionId);
-          console.log('Token refreshed silently');
-        }
-      } catch (error) {
-        console.error('Failed to refresh token:', error);
-        // If refresh fails, logout
-        handleLogout();
-      }
-    }, 30000); // 30 seconds
-
-    // Store interval ID for cleanup
-    window.tokenRefreshInterval = interval;
-  };
-
-  const handleLoginSuccess = async () => {
-    setIsAuthenticated(true);
-    setShowLoginModal(false);
-
-    // Get session info
-    const storedSession = localStorage.getItem('sessionId');
-    if (storedSession) {
-      const info = await authAPI.getSessionInfo(storedSession);
-      setSessionInfo(info);
-
-      // Start token refresh monitoring
-      startTokenRefreshMonitor(storedSession);
-    }
-  };
-
-  const handleLoginError = (error) => {
-    console.error('Login error:', error);
-    alert(`Authentication failed: ${error}`);
-  };
-
-  const handleLogout = async () => {
-    try {
-      const sessionId = localStorage.getItem('sessionId');
-      if (sessionId) {
-        await authAPI.logout(sessionId);
+      const activeSessionId = localStorage.getItem('sessionId');
+      if (activeSessionId) {
+        await authAPI.logout(activeSessionId);
       }
     } catch (error) {
       console.error('Logout error:', error);
     } finally {
-      // Clear local state
+      stopTokenRefreshMonitor();
       localStorage.removeItem('sessionId');
+      setSessionId(null);
       setIsAuthenticated(false);
       setSessionInfo(null);
-
-      // Clear refresh interval
-      if (window.tokenRefreshInterval) {
-        clearInterval(window.tokenRefreshInterval);
-      }
+      setShowLoginModal(false);
+      navigate('/logged-out', { replace: true });
     }
-  };
+  }, [navigate, stopTokenRefreshMonitor]);
+
+  const startTokenRefreshMonitor = useCallback(
+    (activeSessionId) => {
+      if (!activeSessionId) {
+        return;
+      }
+
+      stopTokenRefreshMonitor();
+
+      refreshIntervalRef.current = setInterval(async () => {
+        try {
+          const needsRefresh = await authAPI.checkTokenExpiry(activeSessionId);
+          if (needsRefresh) {
+            await authAPI.refreshToken(activeSessionId);
+            console.log('Token refreshed silently');
+          }
+        } catch (error) {
+          console.error('Failed to refresh token:', error);
+          await handleLogout();
+        }
+      }, 30000);
+    },
+    [handleLogout, stopTokenRefreshMonitor]
+  );
+
+  useEffect(() => {
+    const initializeSession = async () => {
+      try {
+        const storedSession = localStorage.getItem('sessionId');
+        if (!storedSession) {
+          setLoading(false);
+          return;
+        }
+
+        const info = await authAPI.getSessionInfo(storedSession);
+        if (info) {
+          setSessionInfo(info);
+          setSessionId(storedSession);
+          setIsAuthenticated(true);
+          startTokenRefreshMonitor(storedSession);
+        } else {
+          localStorage.removeItem('sessionId');
+          setSessionId(null);
+        }
+      } catch (error) {
+        console.error('Failed to check session:', error);
+        localStorage.removeItem('sessionId');
+        setSessionId(null);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    initializeSession();
+
+    return () => {
+      stopTokenRefreshMonitor();
+    };
+  }, [startTokenRefreshMonitor, stopTokenRefreshMonitor]);
+
+  const handleLoginSuccess = useCallback(async () => {
+    setShowLoginModal(false);
+
+    const storedSession = localStorage.getItem('sessionId');
+    if (!storedSession) {
+      console.warn('Login succeeded but session ID missing');
+      return;
+    }
+
+    try {
+      const info = await authAPI.getSessionInfo(storedSession);
+      if (info) {
+        setSessionInfo(info);
+        setSessionId(storedSession);
+        setIsAuthenticated(true);
+        startTokenRefreshMonitor(storedSession);
+      }
+    } catch (error) {
+      console.error('Failed to load session after login:', error);
+    }
+  }, [startTokenRefreshMonitor]);
+
+  const handleLoginError = useCallback((error) => {
+    console.error('Login error:', error);
+    alert(`Authentication failed: ${error}`);
+  }, []);
+
+  useEffect(() => {
+    if (!loading && !isAuthenticated && location.pathname !== '/logged-out') {
+      navigate('/logged-out', { replace: true });
+    }
+  }, [isAuthenticated, loading, location.pathname, navigate]);
+
+  const userRoles = useMemo(() => sessionInfo?.roles || [], [sessionInfo]);
+
+  const availableNavItems = useMemo(() => {
+    if (!isAuthenticated) {
+      return [];
+    }
+    return NAVIGATION_ITEMS.filter((item) => {
+      if (item.requiresAuth && !isAuthenticated) {
+        return false;
+      }
+      if (!item.roles || item.roles.length === 0) {
+        return true;
+      }
+      return userRoles.some((role) => item.roles.includes(role));
+    });
+  }, [isAuthenticated, userRoles]);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      return;
+    }
+
+    if (availableNavItems.length === 0) {
+      navigate(UNAUTHORIZED_ROUTE.path, { replace: true });
+      return;
+    }
+
+    const pathAllowed = availableNavItems.some((item) => item.path === location.pathname);
+    if (!pathAllowed) {
+      navigate(availableNavItems[0].path, { replace: true });
+    }
+  }, [availableNavItems, isAuthenticated, location.pathname, navigate]);
 
   if (loading) {
     return (
@@ -116,23 +193,52 @@ function App() {
         userInfo={sessionInfo}
         onLogin={() => setShowLoginModal(true)}
         onLogout={handleLogout}
+        navItems={availableNavItems}
       />
 
       <main className="main-content">
-        {isAuthenticated ? (
-          <ChatInterface sessionId={localStorage.getItem('sessionId')} />
-        ) : (
-          <div className="welcome-container">
-            <h1>Welcome to Azure AI Chat</h1>
-            <p>Please sign in with your Azure account to start chatting.</p>
-            <button
-              className="btn-primary"
-              onClick={() => setShowLoginModal(true)}
-            >
-              Sign In with Azure
-            </button>
-          </div>
-        )}
+        <Routes>
+          {!isAuthenticated && (
+            <>
+              <Route
+                path="/logged-out"
+                element={<LoggedOutPage onLogin={() => setShowLoginModal(true)} />}
+              />
+              <Route path="*" element={<Navigate to="/logged-out" replace />} />
+            </>
+          )}
+
+          {isAuthenticated && (
+            <>
+              {availableNavItems.map((item) => {
+                const PageComponent = item.component;
+                return (
+                  <Route
+                    key={item.key}
+                    path={item.path}
+                    element={
+                      <PageComponent
+                        userName={sessionInfo?.user_name}
+                        roles={userRoles}
+                        sessionId={sessionId}
+                      />
+                    }
+                  />
+                );
+              })}
+              <Route path={UNAUTHORIZED_ROUTE.path} element={<UnauthorizedPage />} />
+              <Route
+                path="*"
+                element={
+                  <Navigate
+                    to={(availableNavItems[0] && availableNavItems[0].path) || UNAUTHORIZED_ROUTE.path}
+                    replace
+                  />
+                }
+              />
+            </>
+          )}
+        </Routes>
       </main>
 
       <LoginModal
@@ -143,6 +249,12 @@ function App() {
       />
     </div>
   );
-}
+};
+
+const App = () => (
+  <Router>
+    <AppShell />
+  </Router>
+);
 
 export default App;
