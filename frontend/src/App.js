@@ -1,9 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
-  BrowserRouter as Router,
+  HashRouter as Router,
   Routes,
   Route,
-  Navigate,
   useLocation,
   useNavigate,
 } from 'react-router-dom';
@@ -139,7 +138,11 @@ const AppShell = () => {
   }, []);
 
   useEffect(() => {
-    if (!loading && !isAuthenticated && location.pathname !== '/logged-out') {
+    if (
+      !loading &&
+      !isAuthenticated &&
+      !['/', '/logged-out'].includes(location.pathname)
+    ) {
       navigate('/logged-out', { replace: true });
     }
   }, [isAuthenticated, loading, location.pathname, navigate]);
@@ -201,10 +204,13 @@ const AppShell = () => {
           {!isAuthenticated && (
             <>
               <Route
+                path="/"
+                element={<LoggedOutPage onLogin={() => setShowLoginModal(true)} />}
+              />
+              <Route
                 path="/logged-out"
                 element={<LoggedOutPage onLogin={() => setShowLoginModal(true)} />}
               />
-              <Route path="*" element={<Navigate to="/logged-out" replace />} />
             </>
           )}
 
@@ -227,15 +233,6 @@ const AppShell = () => {
                 );
               })}
               <Route path={UNAUTHORIZED_ROUTE.path} element={<UnauthorizedPage />} />
-              <Route
-                path="*"
-                element={
-                  <Navigate
-                    to={(availableNavItems[0] && availableNavItems[0].path) || UNAUTHORIZED_ROUTE.path}
-                    replace
-                  />
-                }
-              />
             </>
           )}
         </Routes>
