@@ -21,10 +21,12 @@ apiClient.interceptors.request.use(
     }
     const accessToken = localStorage.getItem('accessToken');
     if (accessToken) {
-      // Send both headers - Authorization might get stripped by proxy
+      // Domino proxy strips Authorization headers, use X-Access-Token instead
+      // This header name won't be recognized as auth and won't be stripped
+      config.headers['X-Access-Token'] = accessToken;
+
+      // Still try standard header in case we're not behind Domino proxy
       config.headers.Authorization = `Bearer ${accessToken}`;
-      // Also send as custom header that won't be stripped
-      config.headers['X-Authorization'] = `Bearer ${accessToken}`;
     }
     return config;
   },
@@ -198,22 +200,31 @@ export const debugAuth = async () => {
   const sessionId = localStorage.getItem('sessionId');
   const accessToken = localStorage.getItem('accessToken');
 
-  console.log('Debug Auth Info:');
+  console.log('=== Debug Auth Info ===');
   console.log('Session ID:', sessionId ? `${sessionId.substring(0, 8)}...` : 'Not found');
   console.log('Access Token:', accessToken ? `Present (length: ${accessToken.length})` : 'Not found');
 
+  // First check what headers the backend actually receives
+  try {
+    console.log('\n1. Testing header reception at backend:');
+    const headerTest = await apiClient.get('/api/debug/headers');
+    console.log('Headers received by backend:', headerTest.data);
+    console.log('- Has X-Access-Token:', headerTest.data.has_x_access_token);
+    console.log('- Has X-Session-ID:', headerTest.data.has_x_session_id);
+    console.log('- Has Authorization:', headerTest.data.has_authorization);
+  } catch (error) {
+    console.error('Failed to test headers:', error);
+  }
+
   if (sessionId && accessToken) {
     try {
-      // Try to get session info with explicit headers
+      console.log('\n2. Testing session info endpoint:');
       const response = await apiClient.get(`/api/session/${sessionId}/info`);
-      console.log('Session info retrieved successfully:', response.data);
+      console.log('✅ Session info retrieved successfully:', response.data);
       return response.data;
     } catch (error) {
-      console.error('Failed to get session info:', error.response?.status, error.response?.data);
-
-      // Log the actual headers being sent
-      console.log('Request headers:', error.config?.headers);
-
+      console.error('❌ Failed to get session info:', error.response?.status, error.response?.data);
+      console.log('Request config headers:', error.config?.headers);
       return null;
     }
   }

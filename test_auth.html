@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Auth Test</title>
+</head>
+<body>
+    <h1>Authentication Header Test</h1>
+    <div>
+        <h2>1. Login First</h2>
+        <p>Complete login through your app first, then come back here</p>
+    </div>
+
+    <div>
+        <h2>2. Test Headers</h2>
+        <button onclick="testHeaders()">Test Headers Reception</button>
+        <button onclick="testAuth()">Test Authentication</button>
+    </div>
+
+    <div>
+        <h2>Results:</h2>
+        <pre id="results"></pre>
+    </div>
+
+    <script>
+        const API_BASE = '';  // Use proxy
+
+        function getHeaders() {
+            const sessionId = localStorage.getItem('sessionId');
+            const accessToken = localStorage.getItem('accessToken');
+
+            return {
+                'Content-Type': 'application/json',
+                'X-Session-ID': sessionId || '',
+                'X-Access-Token': accessToken || ''
+            };
+        }
+
+        async function testHeaders() {
+            const results = document.getElementById('results');
+            results.textContent = 'Testing headers...\n';
+
+            try {
+                const response = await fetch(`${API_BASE}/api/debug/headers`, {
+                    method: 'GET',
+                    headers: getHeaders()
+                });
+
+                const data = await response.json();
+                results.textContent += 'Headers received by backend:\n';
+                results.textContent += JSON.stringify(data, null, 2);
+            } catch (error) {
+                results.textContent += 'Error: ' + error.message;
+            }
+        }
+
+        async function testAuth() {
+            const results = document.getElementById('results');
+            const sessionId = localStorage.getItem('sessionId');
+
+            results.textContent = 'Testing authentication...\n';
+
+            try {
+                const response = await fetch(`${API_BASE}/api/session/${sessionId}/info`, {
+                    method: 'GET',
+                    headers: getHeaders()
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    results.textContent += '✅ SUCCESS! Session info:\n';
+                    results.textContent += JSON.stringify(data, null, 2);
+                } else {
+                    const error = await response.json();
+                    results.textContent += '❌ FAILED! Error:\n';
+                    results.textContent += JSON.stringify(error, null, 2);
+                }
+            } catch (error) {
+                results.textContent += 'Error: ' + error.message;
+            }
+        }
+
+        // Show current tokens on load
+        window.onload = function() {
+            const sessionId = localStorage.getItem('sessionId');
+            const accessToken = localStorage.getItem('accessToken');
+
+            const results = document.getElementById('results');
+            results.textContent = 'Current tokens in localStorage:\n';
+            results.textContent += `Session ID: ${sessionId ? sessionId.substring(0, 8) + '...' : 'Not found'}\n`;
+            results.textContent += `Access Token: ${accessToken ? 'Present (length: ' + accessToken.length + ')' : 'Not found'}\n`;
+        }
+    </script>
+</body>
+</html>

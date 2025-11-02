@@ -36,10 +36,10 @@ app = FastAPI(title="Azure Auth Chat API")
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Frontend URL
+    allow_origins=["http://localhost:3000", "*"],  # Allow all origins in dev
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*", "X-Access-Token", "X-Session-ID"],
     expose_headers=["*"],  # Expose all headers to frontend
 )
 
@@ -117,7 +117,7 @@ async def get_current_user(
     request: Request,
     x_session_id: Optional[str] = Header(default=None),
     authorization: Optional[str] = Header(default=None),
-    x_authorization: Optional[str] = Header(default=None)
+    x_access_token: Optional[str] = Header(default=None)
 ) -> TokenData:
     """Retrieve the current user based on session ID and bearer token"""
     # Log all incoming headers for debugging
@@ -128,19 +128,25 @@ async def get_current_user(
         logger.error(f"Session ID not found. Available headers: {list(request.headers.keys())}")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session header missing")
 
-    # Try to get authorization from multiple sources (proxy might strip Authorization header)
-    authorization_header = _extract_header_with_fallback(request, "authorization", authorization)
-    if not authorization_header:
-        # Fallback to X-Authorization header if Authorization was stripped
-        authorization_header = _extract_header_with_fallback(request, "x-authorization", x_authorization)
+    # Try to get token from multiple sources
+    # First try X-Access-Token (won't be stripped by proxies)
+    token = _extract_header_with_fallback(request, "x-access-token", x_access_token)
+    if token:
+        logger.debug(f"Token found in X-Access-Token header (length: {len(token)})")
 
-    if not authorization_header:
-        logger.error(f"No authorization header found. Headers available: {list(request.headers.keys())}")
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authorization header missing")
+    # If not found, try standard Authorization header
+    if not token:
+        authorization_header = _extract_header_with_fallback(request, "authorization", authorization)
+        if authorization_header:
+            scheme, extracted_token = _parse_authorization_header(authorization_header)
+            if scheme.lower() == "bearer" and extracted_token:
+                token = extracted_token
+                logger.debug(f"Token found in Authorization header (length: {len(token)})")
 
-    scheme, token = _parse_authorization_header(authorization_header)
-    if scheme.lower() != "bearer" or not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authorization header")
+    if not token:
+        logger.error(f"No access token found. Headers available: {list(request.headers.keys())}")
+        logger.error(f"Looking for: 'x-access-token' or 'authorization'")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Access token missing")
 
     # Ensure token is properly trimmed
     token = token.strip()
@@ -391,6 +397,19 @@ async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "timestamp": datetime.utcnow()}
 
+@app.get("/api/debug/headers")
+async def debug_headers(request: Request):
+    """Debug endpoint to see what headers are being received"""
+    headers = dict(request.headers)
+    logger.info(f"Debug headers endpoint called. Headers: {headers}")
+    return {
+        "headers": headers,
+        "has_x_access_token": "x-access-token" in headers,
+        "has_x_session_id": "x-session-id" in headers,
+        "has_authorization": "authorization" in headers,
+        "timestamp": datetime.utcnow()
+    }
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup"""
@@ -415,5 +434,5 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8000,
         reload=True,
-        log_level="info"
+        log_level="debug"
     )
