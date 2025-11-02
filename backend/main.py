@@ -113,6 +113,9 @@ async def get_current_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session")
 
     stored_token = await token_manager.get_token(x_session_id)
+    if not stored_token:
+        stored_token = session_data.get("user_info", {}).get("access_token")
+
     if not stored_token or stored_token != token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid access token")
 
