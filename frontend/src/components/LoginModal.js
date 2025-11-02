@@ -15,7 +15,6 @@ const LoginModal = ({ isOpen, onClose, onLoginSuccess, onError }) => {
       setUserCode('');
       setVerificationUri('');
       setCopied(false);
-      setSessionId(null);
     }
   }, [isOpen]);
 
@@ -194,7 +193,6 @@ const LoginModal = ({ isOpen, onClose, onLoginSuccess, onError }) => {
                   setStep('idle');
                   setUserCode('');
                   setVerificationUri('');
-      // Session ID is stored in localStorage for downstream flows
                 }}
                 className="btn-primary btn-full"
               >
