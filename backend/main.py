@@ -23,7 +23,10 @@ from openai_service import AzureOpenAIService
 from config import Settings
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Initialize services
@@ -37,6 +40,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],  # Expose all headers to frontend
 )
 
 # Initialize managers
@@ -112,15 +116,26 @@ def _extract_header_with_fallback(request: Request, header_name: str, supplied_v
 async def get_current_user(
     request: Request,
     x_session_id: Optional[str] = Header(default=None),
-    authorization: Optional[str] = Header(default=None)
+    authorization: Optional[str] = Header(default=None),
+    x_authorization: Optional[str] = Header(default=None)
 ) -> TokenData:
     """Retrieve the current user based on session ID and bearer token"""
+    # Log all incoming headers for debugging
+    logger.debug(f"Incoming headers: {dict(request.headers)}")
+
     session_id = _extract_header_with_fallback(request, "x-session-id", x_session_id)
     if not session_id:
+        logger.error(f"Session ID not found. Available headers: {list(request.headers.keys())}")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session header missing")
 
+    # Try to get authorization from multiple sources (proxy might strip Authorization header)
     authorization_header = _extract_header_with_fallback(request, "authorization", authorization)
     if not authorization_header:
+        # Fallback to X-Authorization header if Authorization was stripped
+        authorization_header = _extract_header_with_fallback(request, "x-authorization", x_authorization)
+
+    if not authorization_header:
+        logger.error(f"No authorization header found. Headers available: {list(request.headers.keys())}")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authorization header missing")
 
     scheme, token = _parse_authorization_header(authorization_header)
@@ -205,6 +220,8 @@ async def complete_authentication(request: AuthCompleteRequest):
     """Complete the authentication and get user info"""
     try:
         result = await auth_service.complete_auth(request.session_id)
+        logger.info(f"Authentication completed for session {request.session_id}")
+        logger.debug(f"Access token length: {len(result.get('access_token', ''))}")
         return AuthCompleteResponse(**result)
     except Exception as e:
         logger.error(f"Failed to complete authentication: {e}")
@@ -248,8 +265,12 @@ async def get_session_info(
     current_user: TokenData = Depends(get_current_user)
 ):
     """Get session information"""
+    logger.info(f"Getting session info for session_id: {session_id}")
+    logger.debug(f"Current user session_id: {current_user.session_id}, roles: {current_user.roles}")
+
     try:
         if session_id != current_user.session_id:
+            logger.error(f"Session mismatch: URL session_id={session_id}, token session_id={current_user.session_id}")
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Session mismatch")
 
         session_data = session_manager.get_session(session_id)

@@ -21,7 +21,10 @@ apiClient.interceptors.request.use(
     }
     const accessToken = localStorage.getItem('accessToken');
     if (accessToken) {
+      // Send both headers - Authorization might get stripped by proxy
       config.headers.Authorization = `Bearer ${accessToken}`;
+      // Also send as custom header that won't be stripped
+      config.headers['X-Authorization'] = `Bearer ${accessToken}`;
     }
     return config;
   },
@@ -188,6 +191,34 @@ export const healthCheck = async () => {
     console.error('Health check failed:', error);
     return null;
   }
+};
+
+// Debug function to test authentication headers
+export const debugAuth = async () => {
+  const sessionId = localStorage.getItem('sessionId');
+  const accessToken = localStorage.getItem('accessToken');
+
+  console.log('Debug Auth Info:');
+  console.log('Session ID:', sessionId ? `${sessionId.substring(0, 8)}...` : 'Not found');
+  console.log('Access Token:', accessToken ? `Present (length: ${accessToken.length})` : 'Not found');
+
+  if (sessionId && accessToken) {
+    try {
+      // Try to get session info with explicit headers
+      const response = await apiClient.get(`/api/session/${sessionId}/info`);
+      console.log('Session info retrieved successfully:', response.data);
+      return response.data;
+    } catch (error) {
+      console.error('Failed to get session info:', error.response?.status, error.response?.data);
+
+      // Log the actual headers being sent
+      console.log('Request headers:', error.config?.headers);
+
+      return null;
+    }
+  }
+
+  return null;
 };
 
 // Export the API client for advanced usage

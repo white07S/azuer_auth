@@ -1,5 +1,5 @@
-import apiClient, { authAPI, chatAPI, healthCheck } from './utils/api';
+import apiClient, { authAPI, chatAPI, healthCheck, debugAuth } from './utils/api';
 
-export { apiClient, authAPI, chatAPI, healthCheck };
+export { apiClient, authAPI, chatAPI, healthCheck, debugAuth };
 
 export default apiClient;
