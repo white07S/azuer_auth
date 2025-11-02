@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Dict, Optional, List, Tuple
 import logging
 
-from fastapi import FastAPI, HTTPException, Depends, Header, status
+from fastapi import FastAPI, HTTPException, Depends, Header, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -93,26 +93,45 @@ def _parse_authorization_header(auth_header: str) -> Tuple[str, str]:
         return "", ""
     return parts[0], parts[1].strip()
 
+def _extract_header_with_fallback(request: Request, header_name: str, supplied_value: Optional[str]) -> Optional[str]:
+    """Return header value, allowing for proxy-added prefixes (e.g., X-Forwarded...)."""
+    if supplied_value:
+        return supplied_value
+
+    target = header_name.lower()
+    for name, value in request.headers.items():
+        if name.lower() == target:
+            return value
+
+    for name, value in request.headers.items():
+        if name.lower().endswith(target):
+            return value
+
+    return None
+
 async def get_current_user(
+    request: Request,
     x_session_id: Optional[str] = Header(default=None),
     authorization: Optional[str] = Header(default=None)
 ) -> TokenData:
     """Retrieve the current user based on session ID and bearer token"""
-    if not x_session_id:
+    session_id = _extract_header_with_fallback(request, "x-session-id", x_session_id)
+    if not session_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session header missing")
 
-    if not authorization:
+    authorization_header = _extract_header_with_fallback(request, "authorization", authorization)
+    if not authorization_header:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authorization header missing")
 
-    scheme, token = _parse_authorization_header(authorization)
+    scheme, token = _parse_authorization_header(authorization_header)
     if scheme.lower() != "bearer" or not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authorization header")
 
-    session_data = session_manager.get_session(x_session_id)
+    session_data = session_manager.get_session(session_id)
     if not session_data or session_data.get("status") != "completed":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session")
 
-    stored_token = await token_manager.get_token(x_session_id)
+    stored_token = await token_manager.get_token(session_id)
     if not stored_token:
         stored_token = session_data.get("user_info", {}).get("access_token")
 
@@ -121,7 +140,7 @@ async def get_current_user(
 
     user_info = session_data.get("user_info", {})
     return TokenData(
-        session_id=x_session_id,
+        session_id=session_id,
         email=user_info.get("email"),
         roles=user_info.get("roles", []),
         user_name=user_info.get("user_name"),
