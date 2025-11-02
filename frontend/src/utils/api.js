@@ -17,6 +17,10 @@ apiClient.interceptors.request.use(
     if (sessionId) {
       config.headers['X-Session-ID'] = sessionId;
     }
+    const accessToken = localStorage.getItem('accessToken');
+    if (accessToken) {
+      config.headers.Authorization = `Bearer ${accessToken}`;
+    }
     return config;
   },
   (error) => {
@@ -31,6 +35,7 @@ apiClient.interceptors.response.use(
     if (error.response?.status === 401) {
       // Unauthorized - clear session and redirect to login
       localStorage.removeItem('sessionId');
+      localStorage.removeItem('accessToken');
       window.location.reload();
     }
     return Promise.reject(error);
@@ -114,7 +119,7 @@ export const authAPI = {
     try {
       const info = await authAPI.getSessionInfo(sessionId);
       if (!info || !info.token_expires_at) {
-        return true; // Need refresh if no expiry info
+        return { needsRefresh: true, sessionInfo: info };
       }
 
       const expiryTime = new Date(info.token_expires_at);
@@ -122,10 +127,10 @@ export const authAPI = {
       const bufferMinutes = 5;
       const bufferTime = new Date(now.getTime() + bufferMinutes * 60000);
 
-      return bufferTime >= expiryTime;
+      return { needsRefresh: bufferTime >= expiryTime, sessionInfo: info };
     } catch (error) {
       console.error('Failed to check token expiry:', error);
-      return true; // Assume needs refresh on error
+      return { needsRefresh: true, sessionInfo: null };
     }
   },
 };

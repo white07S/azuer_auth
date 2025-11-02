@@ -7,7 +7,6 @@ const LoginModal = ({ isOpen, onClose, onLoginSuccess, onError }) => {
   const [userCode, setUserCode] = useState('');
   const [verificationUri, setVerificationUri] = useState('');
   const [copied, setCopied] = useState(false);
-  const [sessionId, setSessionId] = useState(null);
 
   useEffect(() => {
     if (!isOpen) {
@@ -26,7 +25,6 @@ const LoginModal = ({ isOpen, onClose, onLoginSuccess, onError }) => {
       const data = await authAPI.startAuth();
       setUserCode(data.user_code);
       setVerificationUri(data.verification_uri);
-      setSessionId(data.session_id);
       setStep('code');
 
       // Store session ID in localStorage
@@ -59,10 +57,10 @@ const LoginModal = ({ isOpen, onClose, onLoginSuccess, onError }) => {
           if (status.authorized) {
             // Complete the auth flow
             try {
-              await authAPI.completeAuth(sid);
+              const authResult = await authAPI.completeAuth(sid);
               setStep('success');
               // Trigger success callback immediately, then close
-              onLoginSuccess();
+              onLoginSuccess(authResult);
               setTimeout(() => {
                 onClose();
               }, 800);
@@ -196,7 +194,7 @@ const LoginModal = ({ isOpen, onClose, onLoginSuccess, onError }) => {
                   setStep('idle');
                   setUserCode('');
                   setVerificationUri('');
-                  setSessionId(null);
+      // Session ID is stored in localStorage for downstream flows
                 }}
                 className="btn-primary btn-full"
               >

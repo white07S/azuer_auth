@@ -7,10 +7,10 @@ import os
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple
 import logging
 
-from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, Header, status
+from fastapi import FastAPI, HTTPException, Depends, Header, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -45,30 +45,6 @@ token_manager = TokenManager()
 auth_service = AzureAuthService(settings, session_manager, token_manager)
 openai_service = AzureOpenAIService(settings, token_manager)
 
-# Connection manager for WebSockets
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: Dict[str, List[WebSocket]] = {}
-
-    async def connect(self, websocket: WebSocket, session_id: str):
-        await websocket.accept()
-        if session_id not in self.active_connections:
-            self.active_connections[session_id] = []
-        self.active_connections[session_id].append(websocket)
-
-    def disconnect(self, websocket: WebSocket, session_id: str):
-        if session_id in self.active_connections:
-            self.active_connections[session_id].remove(websocket)
-            if not self.active_connections[session_id]:
-                del self.active_connections[session_id]
-
-    async def send_message(self, message: str, session_id: str):
-        if session_id in self.active_connections:
-            for connection in self.active_connections[session_id]:
-                await connection.send_text(message)
-
-manager = ConnectionManager()
-
 # Request/Response models
 class AuthStartRequest(BaseModel):
     client_id: Optional[str] = None
@@ -93,6 +69,7 @@ class AuthCompleteResponse(BaseModel):
     user_info: dict
     roles: List[str]
     token_expires_at: datetime
+    access_token: str
 
 class ChatMessage(BaseModel):
     session_id: str
@@ -110,14 +87,34 @@ class TokenData(BaseModel):
     roles: List[str] = Field(default_factory=list)
     user_name: Optional[str] = None
 
-async def get_current_user(x_session_id: Optional[str] = Header(default=None)) -> TokenData:
-    """Retrieve the current user based on the X-Session-ID header"""
+def _parse_authorization_header(auth_header: str) -> Tuple[str, str]:
+    parts = auth_header.split(" ", 1)
+    if len(parts) != 2:
+        return "", ""
+    return parts[0], parts[1].strip()
+
+async def get_current_user(
+    x_session_id: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None)
+) -> TokenData:
+    """Retrieve the current user based on session ID and bearer token"""
     if not x_session_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session header missing")
+
+    if not authorization:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authorization header missing")
+
+    scheme, token = _parse_authorization_header(authorization)
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authorization header")
 
     session_data = session_manager.get_session(x_session_id)
     if not session_data or session_data.get("status") != "completed":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session")
+
+    stored_token = await token_manager.get_token(x_session_id)
+    if not stored_token or stored_token != token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid access token")
 
     user_info = session_data.get("user_info", {})
     return TokenData(
@@ -172,15 +169,9 @@ async def check_auth_status(session_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/auth/complete", response_model=AuthCompleteResponse)
-async def complete_authentication(
-    request: AuthCompleteRequest,
-    current_user: TokenData = Depends(get_current_user)
-):
+async def complete_authentication(request: AuthCompleteRequest):
     """Complete the authentication and get user info"""
     try:
-        if request.session_id != current_user.session_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Session mismatch")
-
         result = await auth_service.complete_auth(request.session_id)
         return AuthCompleteResponse(**result)
     except Exception as e:
@@ -341,66 +332,6 @@ async def clear_chat_history(
     except Exception as e:
         logger.error(f"Failed to clear chat history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-@app.websocket("/ws/{session_id}")
-async def websocket_endpoint(websocket: WebSocket, session_id: str):
-    """WebSocket endpoint for real-time chat"""
-    await manager.connect(websocket, session_id)
-    try:
-        while True:
-            data = await websocket.receive_text()
-            message = json.loads(data)
-
-            # Process the message
-            if message.get("type") == "chat":
-                # Verify session
-                session_data = session_manager.get_session(session_id)
-                if not session_data:
-                    await websocket.send_text(json.dumps({
-                        "type": "error",
-                        "message": "Invalid session"
-                    }))
-                    break
-
-                # Check token refresh
-                if await token_manager.needs_refresh(session_id):
-                    await auth_service.refresh_session_token(session_id)
-
-                # Store user message in history
-                session_manager.store_chat_message(session_id, {
-                    "role": "user",
-                    "content": message.get("message")
-                })
-
-                # Get OpenAI response
-                try:
-                    response = await openai_service.get_chat_response(
-                        session_id=session_id,
-                        message=message.get("message"),
-                        context=message.get("context")
-                    )
-
-                    # Store assistant response in history
-                    session_manager.store_chat_message(session_id, {
-                        "role": "assistant",
-                        "content": response.get("message")
-                    })
-
-                    await websocket.send_text(json.dumps({
-                        "type": "response",
-                        "data": response
-                    }))
-                except Exception as e:
-                    await websocket.send_text(json.dumps({
-                        "type": "error",
-                        "message": str(e)
-                    }))
-
-    except WebSocketDisconnect:
-        manager.disconnect(websocket, session_id)
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-        manager.disconnect(websocket, session_id)
 
 @app.get("/api/health")
 async def health_check():

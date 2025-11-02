@@ -35,7 +35,8 @@ const AppShell = () => {
   const handleLogout = useCallback(async () => {
     try {
       const activeSessionId = localStorage.getItem('sessionId');
-      if (activeSessionId) {
+      const activeToken = localStorage.getItem('accessToken');
+      if (activeSessionId && activeToken) {
         await authAPI.logout(activeSessionId);
       }
     } catch (error) {
@@ -43,6 +44,7 @@ const AppShell = () => {
     } finally {
       stopTokenRefreshMonitor();
       localStorage.removeItem('sessionId');
+      localStorage.removeItem('accessToken');
       setSessionId(null);
       setIsAuthenticated(false);
       setSessionInfo(null);
@@ -61,9 +63,20 @@ const AppShell = () => {
 
       refreshIntervalRef.current = setInterval(async () => {
         try {
-          const needsRefresh = await authAPI.checkTokenExpiry(activeSessionId);
+          const { needsRefresh, sessionInfo: latestInfo } = await authAPI.checkTokenExpiry(activeSessionId);
+          if (latestInfo) {
+            setSessionInfo(latestInfo);
+          }
           if (needsRefresh) {
-            await authAPI.refreshToken(activeSessionId);
+            const refreshResult = await authAPI.refreshToken(activeSessionId);
+            if (refreshResult?.access_token) {
+              localStorage.setItem('accessToken', refreshResult.access_token);
+            }
+            if (refreshResult?.expires_at) {
+              setSessionInfo((prev) =>
+                prev ? { ...prev, token_expires_at: refreshResult.expires_at } : prev
+              );
+            }
             console.log('Token refreshed silently');
           }
         } catch (error) {
@@ -79,7 +92,11 @@ const AppShell = () => {
     const initializeSession = async () => {
       try {
         const storedSession = localStorage.getItem('sessionId');
-        if (!storedSession) {
+        const storedToken = localStorage.getItem('accessToken');
+        if (!storedSession || !storedToken) {
+          if (storedSession) {
+            setSessionId(storedSession);
+          }
           setLoading(false);
           return;
         }
@@ -92,11 +109,13 @@ const AppShell = () => {
           startTokenRefreshMonitor(storedSession);
         } else {
           localStorage.removeItem('sessionId');
+          localStorage.removeItem('accessToken');
           setSessionId(null);
         }
       } catch (error) {
         console.error('Failed to check session:', error);
         localStorage.removeItem('sessionId');
+        localStorage.removeItem('accessToken');
         setSessionId(null);
       } finally {
         setLoading(false);
@@ -110,22 +129,42 @@ const AppShell = () => {
     };
   }, [startTokenRefreshMonitor, stopTokenRefreshMonitor]);
 
-  const handleLoginSuccess = useCallback(async () => {
+  const handleLoginSuccess = useCallback(async (authResult) => {
     setShowLoginModal(false);
 
-    const storedSession = localStorage.getItem('sessionId');
-    if (!storedSession) {
+    const resolvedSessionId = authResult?.session_id || localStorage.getItem('sessionId');
+    if (!resolvedSessionId) {
       console.warn('Login succeeded but session ID missing');
       return;
     }
+    setSessionId(resolvedSessionId);
 
     try {
-      const info = await authAPI.getSessionInfo(storedSession);
+      let monitorStarted = false;
+      if (authResult?.access_token) {
+        localStorage.setItem('accessToken', authResult.access_token);
+      }
+
+      if (authResult) {
+        setSessionInfo((prev) => ({
+          session_id: resolvedSessionId,
+          user_email: authResult.user_info?.email,
+          user_name: authResult.user_info?.user_name,
+          roles: authResult.roles || [],
+          token_expires_at: authResult.token_expires_at,
+        }));
+        setIsAuthenticated(true);
+        startTokenRefreshMonitor(resolvedSessionId);
+        monitorStarted = true;
+      }
+
+      const info = await authAPI.getSessionInfo(resolvedSessionId);
       if (info) {
         setSessionInfo(info);
-        setSessionId(storedSession);
         setIsAuthenticated(true);
-        startTokenRefreshMonitor(storedSession);
+        if (!monitorStarted) {
+          startTokenRefreshMonitor(resolvedSessionId);
+        }
       }
     } catch (error) {
       console.error('Failed to load session after login:', error);

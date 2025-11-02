@@ -25,6 +25,29 @@ class AzureAuthService:
         self.token_manager = token_manager
         self.active_auth_processes = {}
 
+    @staticmethod
+    def _normalize_timestamp(timestamp: Optional[str]) -> Optional[str]:
+        """Convert various Azure timestamp formats to ISO 8601."""
+        if not timestamp:
+            return None
+
+        formats = [
+            "%Y-%m-%d %H:%M:%S.%f",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S.%fZ",
+            "%Y-%m-%dT%H:%M:%SZ",
+            "%Y-%m-%dT%H:%M:%S.%f",
+            "%Y-%m-%dT%H:%M:%S",
+        ]
+
+        for fmt in formats:
+            try:
+                return datetime.strptime(timestamp, fmt).isoformat()
+            except ValueError:
+                continue
+
+        return timestamp
+
     async def start_device_code_auth(self, client_id: Optional[str] = None) -> dict:
         """Start the device code authentication flow"""
         session_id = str(uuid.uuid4())
@@ -186,12 +209,15 @@ class AzureAuthService:
 
                     # Update session with user info
                     session_data = self.session_manager.get_session(session_id)
+                    normalized_expiry = self._normalize_timestamp(user_info.get("token_expires_on"))
+                    if normalized_expiry:
+                        user_info["token_expires_on"] = normalized_expiry
                     session_data.update({
                         "status": "completed",
                         "authenticated": True,
                         "user_info": user_info,
                         "login_data": login_data[0] if login_data else {},
-                        "token_expires_at": user_info.get("token_expires_on")
+                        "token_expires_at": normalized_expiry
                     })
 
                     self.session_manager.save_session(session_id, session_data)
@@ -228,6 +254,9 @@ class AzureAuthService:
 
             token_output = await self._run_az_command(token_cmd, env)
             token_data = json.loads(token_output)
+            expires_iso = self._normalize_timestamp(token_data.get("expiresOn"))
+            if expires_iso:
+                token_data["expiresOn"] = expires_iso
 
             # Get account information
             account_output = await self._run_az_command(
@@ -286,7 +315,7 @@ class AzureAuthService:
                 "user_type": user_type,
                 "tenant_id": account_data.get("tenantId"),
                 "subscription_id": account_data.get("id"),
-                "token_expires_on": token_data.get("expiresOn"),
+                "token_expires_on": expires_iso,
                 "access_token": token_data.get("accessToken"),
                 "object_id": azure_object_id,
                 "group_ids": group_ids,
@@ -498,11 +527,14 @@ class AzureAuthService:
             raise Exception("Authentication not completed")
 
         user_info = session_data.get("user_info", {})
+        access_token = user_info.get("access_token")
+        if not access_token:
+            raise Exception("Access token not available for session")
 
         # Store token information
         await self.token_manager.store_token(
             session_id=session_id,
-            token=user_info.get("access_token"),
+            token=access_token,
             expires_at=user_info.get("token_expires_on"),
             refresh_token=None  # Azure CLI handles refresh internally
         )
@@ -522,6 +554,13 @@ class AzureAuthService:
         else:
             token_expires_at = datetime.utcnow()
 
+        normalized_expiry = token_expires_at.isoformat()
+        user_record = session_data.setdefault("user_info", {})
+        user_record["token_expires_on"] = normalized_expiry
+        user_record["access_token"] = access_token
+        session_data["token_expires_at"] = normalized_expiry
+        self.session_manager.save_session(session_id, session_data)
+
         return {
             "session_id": session_id,
             "user_info": {
@@ -530,7 +569,8 @@ class AzureAuthService:
                 "tenant_id": user_info.get("tenant_id")
             },
             "roles": user_info.get("roles", []),
-            "token_expires_at": token_expires_at
+            "token_expires_at": token_expires_at,
+            "access_token": access_token
         }
 
     async def refresh_session_token(self, session_id: str) -> dict:
@@ -552,24 +592,33 @@ class AzureAuthService:
 
             token_output = await self._run_az_command(token_cmd, env)
             token_data = json.loads(token_output)
+            normalized_expires = self._normalize_timestamp(token_data.get("expiresOn"))
+            if normalized_expires:
+                token_data["expiresOn"] = normalized_expires
+
+            new_access_token = token_data.get("accessToken")
+            if not new_access_token:
+                raise Exception("Failed to retrieve refreshed access token")
 
             # Update token information
             await self.token_manager.store_token(
                 session_id=session_id,
-                token=token_data.get("accessToken"),
+                token=new_access_token,
                 expires_at=token_data.get("expiresOn"),
                 refresh_token=None
             )
 
             # Update session data
-            session_data["user_info"]["access_token"] = token_data.get("accessToken")
-            session_data["user_info"]["token_expires_on"] = token_data.get("expiresOn")
+            user_record = session_data.setdefault("user_info", {})
+            user_record["access_token"] = new_access_token
+            user_record["token_expires_on"] = token_data.get("expiresOn")
             session_data["token_expires_at"] = token_data.get("expiresOn")
             self.session_manager.save_session(session_id, session_data)
 
             return {
                 "token_refreshed": True,
-                "expires_at": token_data.get("expiresOn")
+                "expires_at": token_data.get("expiresOn"),
+                "access_token": new_access_token
             }
 
         except Exception as e:

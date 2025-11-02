@@ -3,116 +3,41 @@ import { Send, Loader, AlertCircle } from 'lucide-react';
 import MessageList from './MessageList';
 import { chatAPI } from '../api';
 
-const ChatInterface = ({ sessionId }) => {
+const ChatInterface = ({ sessionId, roles = [] }) => {
   const [messages, setMessages] = useState([]);
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [isConnected, setIsConnected] = useState(false);
   const messagesEndRef = useRef(null);
-  const inputRef = useRef(null);
-  const wsRef = useRef(null);
 
   useEffect(() => {
-    // Connect to WebSocket
     if (!sessionId) {
-      return undefined;
+      setMessages([]);
+      return;
     }
 
-    connectWebSocket();
-
-    // Load chat history
-    loadChatHistory();
-
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
+    const loadChatHistory = async () => {
+      try {
+        const history = await chatAPI.getChatHistory(sessionId);
+        setMessages(history || []);
+      } catch (err) {
+        console.error('Failed to load chat history:', err);
       }
     };
+
+    loadChatHistory();
   }, [sessionId]);
 
   useEffect(() => {
-    scrollToBottom();
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const connectWebSocket = () => {
-    if (!sessionId) {
-      return;
-    }
-
-    const wsUrl = `ws://localhost:8000/ws/${sessionId}`;
-    wsRef.current = new WebSocket(wsUrl);
-
-    wsRef.current.onopen = () => {
-      console.log('WebSocket connected');
-      setIsConnected(true);
-      setError(null);
-    };
-
-    wsRef.current.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-
-        if (data.type === 'response') {
-          const aiMessage = {
-            role: 'assistant',
-            content: data.data.message,
-            timestamp: data.data.timestamp,
-            id: generateMessageId()
-          };
-          setMessages(prev => [...prev, aiMessage]);
-          setIsLoading(false);
-        } else if (data.type === 'error') {
-          setError(data.message);
-          setIsLoading(false);
-        }
-      } catch (err) {
-        console.error('Failed to parse WebSocket message:', err);
-      }
-    };
-
-    wsRef.current.onerror = (error) => {
-      console.error('WebSocket error:', error);
-      setError('Connection error. Please refresh the page.');
-      setIsConnected(false);
-    };
-
-    wsRef.current.onclose = () => {
-      console.log('WebSocket disconnected');
-      setIsConnected(false);
-
-      // Attempt to reconnect after 3 seconds
-      setTimeout(() => {
-        if (sessionId) {
-          connectWebSocket();
-        }
-      }, 3000);
-    };
-  };
-
-  const loadChatHistory = async () => {
-    if (!sessionId) {
-      return;
-    }
-
-    try {
-      const history = await chatAPI.getChatHistory(sessionId);
-      setMessages(history || []);
-    } catch (err) {
-      console.error('Failed to load chat history:', err);
-    }
-  };
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
-
-  const generateMessageId = () => {
-    return `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  };
+  const generateMessageId = () => `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
   const sendMessage = async () => {
-    if (!inputMessage.trim() || isLoading) return;
+    if (!inputMessage.trim() || isLoading) {
+      return;
+    }
 
     if (!sessionId) {
       setError('Session is not ready. Please sign in again.');
@@ -123,8 +48,10 @@ const ChatInterface = ({ sessionId }) => {
       role: 'user',
       content: inputMessage,
       timestamp: new Date().toISOString(),
-      id: generateMessageId()
+      id: generateMessageId(),
     };
+
+    const recentContext = [...messages, userMessage].slice(-10);
 
     setMessages(prev => [...prev, userMessage]);
     setInputMessage('');
@@ -132,44 +59,46 @@ const ChatInterface = ({ sessionId }) => {
     setError(null);
 
     try {
-      if (isConnected && wsRef.current?.readyState === WebSocket.OPEN) {
-        // Send via WebSocket
-        wsRef.current.send(JSON.stringify({
-          type: 'chat',
-          message: inputMessage,
-          context: messages.slice(-10) // Send last 10 messages as context
-        }));
-      } else {
-        // Fallback to REST API
-        const response = await chatAPI.sendMessage(sessionId, inputMessage, messages.slice(-10));
-
-        const aiMessage = {
-          role: 'assistant',
-          content: response.message,
-          timestamp: response.timestamp,
-          id: generateMessageId()
-        };
-
-        setMessages(prev => [...prev, aiMessage]);
-        setIsLoading(false);
-      }
+      const response = await chatAPI.sendMessage(sessionId, userMessage.content, recentContext);
+      const aiMessage = {
+        role: 'assistant',
+        content: response.message,
+        timestamp: response.timestamp,
+        id: generateMessageId(),
+      };
+      setMessages(prev => [...prev, aiMessage]);
     } catch (err) {
       console.error('Failed to send message:', err);
       setError('Failed to send message. Please try again.');
+    } finally {
       setIsLoading(false);
     }
   };
 
-  const handleKeyPress = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
+  const handleKeyPress = (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
       sendMessage();
     }
   };
 
-  const clearChat = () => {
-    setMessages([]);
-    setError(null);
+  const clearChat = async () => {
+    if (!sessionId) {
+      return;
+    }
+    if (!roles.includes('admin')) {
+      setError('You do not have permission to clear chat history.');
+      return;
+    }
+
+    try {
+      await chatAPI.clearChatHistory(sessionId);
+      setMessages([]);
+      setError(null);
+    } catch (err) {
+      console.error('Failed to clear chat history:', err);
+      setError('Could not clear chat history.');
+    }
   };
 
   return (
@@ -177,8 +106,8 @@ const ChatInterface = ({ sessionId }) => {
       <div className="chat-header">
         <h2>AI Assistant</h2>
         <div className="chat-status">
-          <span className={`status-indicator ${isConnected ? 'connected' : 'disconnected'}`}></span>
-          <span>{isConnected ? 'Connected' : 'Reconnecting...'}</span>
+          <span className="status-indicator connected"></span>
+          <span>Session active</span>
         </div>
       </div>
 
@@ -197,9 +126,8 @@ const ChatInterface = ({ sessionId }) => {
       <div className="chat-input-container">
         <div className="chat-input-wrapper">
           <textarea
-            ref={inputRef}
             value={inputMessage}
-            onChange={(e) => setInputMessage(e.target.value)}
+            onChange={(event) => setInputMessage(event.target.value)}
             onKeyPress={handleKeyPress}
             placeholder="Type your message here..."
             className="chat-input"
@@ -214,11 +142,13 @@ const ChatInterface = ({ sessionId }) => {
             {isLoading ? <Loader size={20} className="spinner" /> : <Send size={20} />}
           </button>
         </div>
-        <div className="chat-actions">
-          <button onClick={clearChat} className="btn-text">
-            Clear Chat
-          </button>
-        </div>
+        {roles.includes('admin') && (
+          <div className="chat-actions">
+            <button onClick={clearChat} className="btn-text">
+              Clear Chat
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

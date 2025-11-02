@@ -1,7 +1,7 @@
 import React from 'react';
 import ChatInterface from '../components/ChatInterface';
 
-const ChatPage = ({ sessionId }) => {
+const ChatPage = ({ sessionId, roles }) => {
   return (
     <div className="page-container">
       <header className="page-header">
@@ -11,7 +11,7 @@ const ChatPage = ({ sessionId }) => {
         </p>
       </header>
 
-      <ChatInterface sessionId={sessionId} />
+      <ChatInterface sessionId={sessionId} roles={roles} />
     </div>
   );
 };

@@ -9,7 +9,7 @@ A multi-user chat application with Azure Active Directory authentication and Azu
 - **Session Management**: User-specific folders and session persistence
 - **Automatic Token Refresh**: Silent token refresh before expiry
 - **Azure OpenAI Integration**: Chat with Azure OpenAI using user-specific credentials
-- **Real-time Communication**: WebSocket support for instant messaging
+- **Responsive Messaging**: Seamless request/response chat flow
 - **Clean UI**: Light theme with responsive design
 
 ## Architecture
@@ -19,11 +19,11 @@ A multi-user chat application with Azure Active Directory authentication and Azu
 - **Session Manager**: Manages user sessions and data persistence
 - **Token Manager**: Handles token storage and automatic refresh
 - **OpenAI Service**: Integrates with Azure OpenAI using user credentials
-- **WebSocket Support**: Real-time bidirectional communication
+- **Role-Aware REST APIs**: Enforce Azure AD roles across requests
 
 ### Frontend (React)
 - **Login Modal**: Device code authentication UI
-- **Chat Interface**: Real-time messaging with WebSocket
+- **Chat Interface**: Rich messaging experience with contextual history
 - **Session Management**: Automatic token refresh monitoring
 - **Responsive Design**: Works on desktop and mobile devices
 
@@ -160,11 +160,12 @@ The frontend will start on `http://localhost:3000`
 
 ### Chat
 - `POST /api/chat/message` - Send chat message
-- `WS /ws/{session_id}` - WebSocket for real-time chat
 
 ### Session
 - `GET /api/session/{session_id}/info` - Get session information
 - `GET /api/health` - Health check
+
+> Protected endpoints require both `X-Session-ID` and `Authorization: Bearer <token>` headers.
 
 ## Troubleshooting
 
@@ -178,10 +179,10 @@ The frontend will start on `http://localhost:3000`
 - Verify Azure CLI can refresh tokens: `az account get-access-token`
 - Check session folder permissions
 
-### WebSocket Connection Issues
-- Ensure no proxy/firewall blocking WebSocket connections
+### API Access Issues
+- Ensure `X-Session-ID` and `Authorization` headers are present on protected requests
 - Check CORS settings match frontend URL
-- Verify session ID is valid
+- Verify session ID is valid and active
 
 ## Development
 
@@ -226,6 +227,7 @@ ALLOWED_ROLES=admin,user,viewer
 4. **Use secure session storage**
 5. **Regular token rotation**
 6. **Audit logging for authentication events**
+7. **Require `Authorization: Bearer` tokens alongside `X-Session-ID` on protected routes**
 
 ## License
 
