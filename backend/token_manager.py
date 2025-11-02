@@ -22,29 +22,35 @@ class TokenManager:
             try:
                 # Parse expiration time
                 if isinstance(expires_at, str):
-                    # Handle different date formats
-                    for fmt in [
-                        "%Y-%m-%d %H:%M:%S.%f",
-                        "%Y-%m-%d %H:%M:%S",
-                        "%Y-%m-%dT%H:%M:%S.%fZ",
-                        "%Y-%m-%dT%H:%M:%SZ",
-                        "%Y-%m-%dT%H:%M:%S.%f",
-                        "%Y-%m-%dT%H:%M:%S"
-                    ]:
-                        try:
-                            expires_dt = datetime.strptime(expires_at, fmt)
-                            break
-                        except ValueError:
-                            continue
-                    else:
-                        # If no format matches, use a default expiration
-                        expires_dt = datetime.utcnow() + timedelta(hours=1)
+                    # First try ISO format parsing which handles timezone info
+                    try:
+                        # Handle ISO format with or without timezone
+                        expires_dt = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+                    except (ValueError, AttributeError):
+                        # Handle different date formats
+                        for fmt in [
+                            "%Y-%m-%d %H:%M:%S.%f",
+                            "%Y-%m-%d %H:%M:%S",
+                            "%Y-%m-%dT%H:%M:%S.%fZ",
+                            "%Y-%m-%dT%H:%M:%SZ",
+                            "%Y-%m-%dT%H:%M:%S.%f",
+                            "%Y-%m-%dT%H:%M:%S"
+                        ]:
+                            try:
+                                expires_dt = datetime.strptime(expires_at, fmt)
+                                break
+                            except ValueError:
+                                continue
+                        else:
+                            # If no format matches, use a default expiration
+                            logger.warning(f"Could not parse expires_at '{expires_at}' for session {session_id}, using default 1 hour expiry")
+                            expires_dt = datetime.utcnow() + timedelta(hours=1)
                 else:
                     expires_dt = expires_at
 
                 self._tokens[session_id] = {
-                    "access_token": token,
-                    "refresh_token": refresh_token,
+                    "access_token": token.strip() if token else token,
+                    "refresh_token": refresh_token.strip() if refresh_token else refresh_token,
                     "expires_at": expires_dt,
                     "last_refreshed": datetime.utcnow()
                 }

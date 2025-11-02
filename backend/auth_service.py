@@ -532,12 +532,14 @@ class AzureAuthService:
             raise Exception("Access token not available for session")
 
         # Store token information
+        logger.info(f"Storing token for session {session_id}, token length: {len(access_token) if access_token else 0}")
         await self.token_manager.store_token(
             session_id=session_id,
             token=access_token,
             expires_at=user_info.get("token_expires_on"),
             refresh_token=None  # Azure CLI handles refresh internally
         )
+        logger.info(f"Token stored successfully for session {session_id}")
 
         # Clean up auth process reference
         if session_id in self.active_auth_processes:

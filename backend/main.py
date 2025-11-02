@@ -127,15 +127,25 @@ async def get_current_user(
     if scheme.lower() != "bearer" or not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authorization header")
 
+    # Ensure token is properly trimmed
+    token = token.strip()
+
     session_data = session_manager.get_session(session_id)
     if not session_data or session_data.get("status") != "completed":
+        logger.warning(f"Session {session_id} not found or not completed. Status: {session_data.get('status') if session_data else 'not found'}")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session")
 
     stored_token = await token_manager.get_token(session_id)
     if not stored_token:
+        logger.info(f"Token not found in token_manager for session {session_id}, checking session data")
         stored_token = session_data.get("user_info", {}).get("access_token")
 
-    if not stored_token or stored_token != token:
+    if not stored_token:
+        logger.error(f"No stored token found for session {session_id}")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No access token found for session")
+
+    if stored_token != token:
+        logger.error(f"Token mismatch for session {session_id}. Stored token length: {len(stored_token) if stored_token else 0}, provided token length: {len(token) if token else 0}")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid access token")
 
     user_info = session_data.get("user_info", {})
