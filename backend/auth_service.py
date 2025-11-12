@@ -373,6 +373,34 @@ class AzureAuthService:
 
             member_of_data = json.loads(member_of_output)
 
+            profile_data = None
+            try:
+                profile_output = await self._run_az_command([
+                    "az", "rest",
+                    "--method", "GET",
+                    "--uri", "https://graph.microsoft.com/beta/me/profile"
+                ], env)
+                profile_data = json.loads(profile_output)
+            except Exception as profile_error:
+                logger.warning(f"Could not get user profile: {profile_error}")
+
+            if profile_data:
+                session_id = None
+                session_dir = env.get("AZURE_CONFIG_DIR")
+                if session_dir:
+                    session_path = Path(session_dir)
+                    if session_path.name == ".azure":
+                        session_path = session_path.parent
+                    session_id = session_path.name
+
+                if session_id:
+                    session_data = self.session_manager.get_session(session_id)
+                    if session_data is not None:
+                        user_record = session_data.setdefault("user_info", {})
+                        user_record["graph_profile"] = profile_data
+                        self.session_manager.save_session(session_id, session_data)
+                        logger.info(f"Stored Graph profile for session {session_id}")
+
             # Extract group IDs
             group_ids = [
                 entry.get("id")

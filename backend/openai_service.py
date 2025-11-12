@@ -61,6 +61,36 @@ class AzureOpenAIService:
 
             user_profile = await self._fetch_user_profile(cred, session_dir, session_id)
 
+            session_file = session_dir / "session.json"
+            if session_file.exists():
+                try:
+                    with session_file.open("r", encoding="utf-8") as file_obj:
+                        session_data = json.load(file_obj)
+                    try:
+                        logger.info(
+                            "Session data for session %s: %s",
+                            session_id,
+                            json.dumps(session_data)
+                        )
+                    except (TypeError, ValueError):
+                        logger.info(
+                            "Session data for session %s loaded with keys: %s",
+                            session_id,
+                            list(session_data.keys())
+                        )
+                except Exception as session_error:
+                    logger.warning(
+                        "Failed to read session file for session %s: %s",
+                        session_id,
+                        session_error
+                    )
+            else:
+                logger.info(
+                    "Session file not found for session %s at %s",
+                    session_id,
+                    session_file
+                )
+
             # Token provider function that uses the session's credentials
             async def token_provider():
                 try:
