@@ -2,11 +2,14 @@
 Azure OpenAI Service integration with user-specific credentials
 """
 import os
+import json
+import logging
+import asyncio
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
-import logging
-import asyncio
+import urllib.request
+import urllib.error
 
 from azure.identity import AzureCliCredential
 from openai import AsyncAzureOpenAI
@@ -56,33 +59,26 @@ class AzureOpenAIService:
                 elif "AZURE_CONFIG_DIR" in os.environ:
                     del os.environ["AZURE_CONFIG_DIR"]
 
+            user_profile = await self._fetch_user_profile(cred, session_dir, session_id)
+
             # Token provider function that uses the session's credentials
             async def token_provider():
                 try:
-                    # Ensure Azure config directory is set for token retrieval
-                    old_config = os.environ.get("AZURE_CONFIG_DIR")
-                    os.environ["AZURE_CONFIG_DIR"] = str(session_dir)
-
-                    try:
-                        # Get token from Azure CLI credential
-                        token = await asyncio.get_event_loop().run_in_executor(
-                            None,
-                            lambda: cred.get_token("https://cognitiveservices.azure.com/.default")
-                        )
-                        return token.token
-                    finally:
-                        # Restore original environment
-                        if old_config:
-                            os.environ["AZURE_CONFIG_DIR"] = old_config
-                        elif "AZURE_CONFIG_DIR" in os.environ:
-                            del os.environ["AZURE_CONFIG_DIR"]
+                    token_value = await self._get_token_with_scope(
+                        cred,
+                        session_dir,
+                        "https://cognitiveservices.azure.com/.default",
+                    )
+                    if token_value:
+                        return token_value
                 except Exception as e:
                     logger.error(f"Failed to get token for OpenAI: {e}")
-                    # Fallback to stored token
-                    stored_token = await self.token_manager.get_token(session_id)
-                    if stored_token:
-                        return stored_token
-                    raise
+
+                # Fallback to stored token
+                stored_token = await self.token_manager.get_token(session_id)
+                if stored_token:
+                    return stored_token
+                raise RuntimeError("Unable to acquire token for Azure OpenAI")
 
             # Create the client with async support
             client = AsyncAzureOpenAI(
@@ -94,12 +90,111 @@ class AzureOpenAIService:
                 }
             )
 
+            if user_profile is not None:
+                setattr(client, "user_profile", user_profile)
+                try:
+                    logger.info(
+                        "Graph profile for session %s: %s",
+                        session_id,
+                        json.dumps(user_profile)
+                    )
+                except (TypeError, ValueError):
+                    logger.info(
+                        "Graph profile for session %s could not be serialized; keys: %s",
+                        session_id,
+                        list(user_profile.keys())
+                    )
+            else:
+                setattr(client, "user_profile", None)
+
             logger.info(f"Created Azure OpenAI client for session {session_id}")
             return client
 
         except Exception as e:
             logger.error(f"Failed to create OpenAI client for session {session_id}: {e}")
             raise
+
+    async def _get_token_with_scope(
+        self,
+        cred: AzureCliCredential,
+        session_dir: Path,
+        scope: str,
+    ) -> Optional[str]:
+        """Acquire a token for the given scope using the session-specific Azure CLI profile."""
+        old_config = os.environ.get("AZURE_CONFIG_DIR")
+        os.environ["AZURE_CONFIG_DIR"] = str(session_dir)
+
+        try:
+            loop = asyncio.get_event_loop()
+            token = await loop.run_in_executor(None, lambda: cred.get_token(scope))
+            return token.token if token else None
+        finally:
+            if old_config:
+                os.environ["AZURE_CONFIG_DIR"] = old_config
+            elif "AZURE_CONFIG_DIR" in os.environ:
+                del os.environ["AZURE_CONFIG_DIR"]
+
+    async def _fetch_user_profile(
+        self,
+        cred: AzureCliCredential,
+        session_dir: Path,
+        session_id: str,
+    ) -> Optional[dict]:
+        """Retrieve the signed-in user's Microsoft Graph profile (beta endpoint)."""
+        try:
+            access_token = await self._get_token_with_scope(
+                cred,
+                session_dir,
+                "https://graph.microsoft.com/.default",
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not obtain Graph token for session %s: %s",
+                session_id,
+                e,
+            )
+            return None
+
+        if not access_token:
+            logger.warning(
+                "Graph token not available for session %s",
+                session_id,
+            )
+            return None
+
+        def _call_graph() -> bytes:
+            request = urllib.request.Request(
+                "https://graph.microsoft.com/beta/me/profile",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Accept": "application/json",
+                },
+            )
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return response.read()
+
+        try:
+            loop = asyncio.get_event_loop()
+            raw_profile = await loop.run_in_executor(None, _call_graph)
+            return json.loads(raw_profile.decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            try:
+                error_body = e.read().decode("utf-8")
+            except Exception:
+                error_body = str(e)
+            logger.warning(
+                "Graph profile request failed for session %s: %s",
+                session_id,
+                error_body,
+            )
+        except Exception as e:
+            logger.warning(
+                "Graph profile request failed for session %s: %s",
+                session_id,
+                e,
+            )
+
+        return None
 
     async def get_chat_response(
         self,
