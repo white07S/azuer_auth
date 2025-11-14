@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional, List, Tuple
 import logging
+import hashlib
 
 from fastapi import FastAPI, HTTPException, Depends, Header, status, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -153,23 +154,66 @@ async def get_current_user(
 
     session_data = session_manager.get_session(session_id)
     if not session_data or session_data.get("status") != "completed":
-        logger.warning(f"Session {session_id} not found or not completed. Status: {session_data.get('status') if session_data else 'not found'}")
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session")
+        logger.warning(
+            "Session %s not found or not completed. Status: %s",
+            session_id,
+            session_data.get("status") if session_data else "not found",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired session",
+        )
 
-    stored_token = await token_manager.get_token(session_id)
-    if not stored_token:
-        logger.info(f"Token not found in token_manager for session {session_id}, checking session data")
-        stored_token = session_data.get("user_info", {}).get("access_token")
+    user_info = session_data.get("user_info", {}) or {}
 
-    if not stored_token:
-        logger.error(f"No stored token found for session {session_id}")
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No access token found for session")
+    # Prefer hashed session token when available (new scheme)
+    session_token_hash = (
+        session_data.get("session_token_hash")
+        or user_info.get("session_token_hash")
+    )
 
-    if stored_token != token:
-        logger.error(f"Token mismatch for session {session_id}. Stored token length: {len(stored_token) if stored_token else 0}, provided token length: {len(token) if token else 0}")
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid access token")
+    if session_token_hash:
+        header_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        if header_hash != session_token_hash:
+            logger.error(
+                "Session token mismatch for session %s. Stored hash prefix: %s..., provided hash prefix: %s...",
+                session_id,
+                session_token_hash[:8],
+                header_hash[:8],
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid access token",
+            )
+    else:
+        # Backward compatibility: fall back to raw access token comparison
+        stored_token = await token_manager.get_token(session_id)
+        if not stored_token:
+            logger.info(
+                "Token not found in token_manager for session %s, checking session data",
+                session_id,
+            )
+            stored_token = user_info.get("access_token")
 
-    user_info = session_data.get("user_info", {})
+        if not stored_token:
+            logger.error("No stored token found for session %s", session_id)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="No access token found for session",
+            )
+
+        if stored_token != token:
+            logger.error(
+                "Token mismatch for session %s. Stored token length: %s, provided token length: %s",
+                session_id,
+                len(stored_token) if stored_token else 0,
+                len(token) if token else 0,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid access token",
+            )
+
     return TokenData(
         session_id=session_id,
         email=user_info.get("email"),
@@ -314,10 +358,6 @@ async def send_chat_message(
         if not session_data:
             raise HTTPException(status_code=401, detail="Invalid session")
 
-        # Check if token needs refresh
-        if await token_manager.needs_refresh(message.session_id):
-            await auth_service.refresh_session_token(message.session_id)
-
         # Store user message in history
         session_manager.store_chat_message(message.session_id, {
             "role": "user",
@@ -416,15 +456,12 @@ async def startup_event():
     logger.info("Starting Azure Auth Chat API")
     # Create necessary directories
     Path(settings.SESSION_DIR).mkdir(parents=True, exist_ok=True)
-    # Start token refresh scheduler
-    asyncio.create_task(token_manager.start_refresh_scheduler(auth_service))
     logger.info("API started successfully")
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown"""
     logger.info("Shutting down Azure Auth Chat API")
-    await token_manager.stop_refresh_scheduler()
     # Clean up any active sessions
     await session_manager.cleanup_all_sessions()
 

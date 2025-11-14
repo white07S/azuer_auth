@@ -21,12 +21,8 @@ apiClient.interceptors.request.use(
     }
     const accessToken = localStorage.getItem('accessToken');
     if (accessToken) {
-      // Domino proxy strips Authorization headers, use X-Access-Token instead
-      // This header name won't be recognized as auth and won't be stripped
+      // Use a compact, non-Authorization header for session token
       config.headers['X-Access-Token'] = accessToken;
-
-      // Still try standard header in case we're not behind Domino proxy
-      config.headers.Authorization = `Bearer ${accessToken}`;
     }
     return config;
   },

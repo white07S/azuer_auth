@@ -10,6 +10,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional, Tuple, List
 import logging
+import secrets
+import hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -554,20 +556,24 @@ class AzureAuthService:
         if session_data.get("status") != "completed":
             raise Exception("Authentication not completed")
 
-        user_info = session_data.get("user_info", {})
+        user_info = session_data.get("user_info", {}) or {}
         access_token = user_info.get("access_token")
         if not access_token:
             raise Exception("Access token not available for session")
 
-        # Store token information
-        logger.info(f"Storing token for session {session_id}, token length: {len(access_token) if access_token else 0}")
+        # Store Azure access token information (server-side)
+        logger.info(
+            "Storing Azure access token for session %s, token length: %s",
+            session_id,
+            len(access_token) if access_token else 0,
+        )
         await self.token_manager.store_token(
             session_id=session_id,
             token=access_token,
             expires_at=user_info.get("token_expires_on"),
             refresh_token=None  # Azure CLI handles refresh internally
         )
-        logger.info(f"Token stored successfully for session {session_id}")
+        logger.info("Token stored successfully for session %s", session_id)
 
         # Clean up auth process reference
         if session_id in self.active_auth_processes:
@@ -585,10 +591,17 @@ class AzureAuthService:
             token_expires_at = datetime.utcnow()
 
         normalized_expiry = token_expires_at.isoformat()
+
+        # Issue a compact, client-facing session token (hashed on the server)
+        session_token = secrets.token_urlsafe(32)
+        session_token_hash = hashlib.sha256(session_token.encode("utf-8")).hexdigest()
+
         user_record = session_data.setdefault("user_info", {})
         user_record["token_expires_on"] = normalized_expiry
         user_record["access_token"] = access_token
+        user_record["session_token_hash"] = session_token_hash
         session_data["token_expires_at"] = normalized_expiry
+        session_data["session_token_hash"] = session_token_hash
         self.session_manager.save_session(session_id, session_data)
 
         return {
@@ -600,7 +613,8 @@ class AzureAuthService:
             },
             "roles": user_info.get("roles", []),
             "token_expires_at": token_expires_at,
-            "access_token": access_token
+            # Return the compact session token to the frontend instead of the raw Azure token
+            "access_token": session_token
         }
 
     async def refresh_session_token(self, session_id: str) -> dict:
@@ -630,7 +644,7 @@ class AzureAuthService:
             if not new_access_token:
                 raise Exception("Failed to retrieve refreshed access token")
 
-            # Update token information
+            # Update Azure access token information (server-side)
             await self.token_manager.store_token(
                 session_id=session_id,
                 token=new_access_token,
@@ -643,12 +657,20 @@ class AzureAuthService:
             user_record["access_token"] = new_access_token
             user_record["token_expires_on"] = token_data.get("expiresOn")
             session_data["token_expires_at"] = token_data.get("expiresOn")
+
+            # Rotate the client-facing session token on refresh
+            session_token = secrets.token_urlsafe(32)
+            session_token_hash = hashlib.sha256(session_token.encode("utf-8")).hexdigest()
+            user_record["session_token_hash"] = session_token_hash
+            session_data["session_token_hash"] = session_token_hash
+
             self.session_manager.save_session(session_id, session_data)
 
             return {
                 "token_refreshed": True,
                 "expires_at": token_data.get("expiresOn"),
-                "access_token": new_access_token
+                # Return the new compact session token to the frontend
+                "access_token": session_token
             }
 
         except Exception as e:
