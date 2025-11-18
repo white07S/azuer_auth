@@ -1,0 +1,33 @@
+{
+  "main": {
+    "host": "0.0.0.0",
+    "port": 8000,
+    "workers": 4,
+    "reload": true,
+    "log_level": "info"
+  },
+  "routers": [
+    {
+      "name": "auth-api",
+      "router_path": "routers.past_api_router:app",
+      "host": "127.0.0.1",
+      "port": 8101,
+      "prefix": "/"
+    },
+    {
+      "name": "mock1",
+      "router_path": "routers.mock_router_one:app",
+      "host": "127.0.0.1",
+      "port": 8102,
+      "prefix": "/mock1"
+    },
+    {
+      "name": "mock2",
+      "router_path": "routers.mock_router_two:app",
+      "host": "127.0.0.1",
+      "port": 8103,
+      "prefix": "/mock2"
+    }
+  ]
+}
+

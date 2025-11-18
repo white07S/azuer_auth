@@ -189,7 +189,7 @@ The frontend will start on `http://localhost:3000`
 ### Backend Development
 ```bash
 cd backend
-uvicorn main:app --reload --port 8000
+python main.py  # starts main router and child routers from routers/config.json
 ```
 
 ### Frontend Development
