@@ -22,5 +22,14 @@ async def status():
     return {"router": "mock2", "status": "green"}
 
 
+@router.get("/health")
+async def health():
+    return {
+        "router": "mock2",
+        "status": "green",
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+    }
+
+
 app = FastAPI(title="Mock Router Two")
 app.include_router(router)

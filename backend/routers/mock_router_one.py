@@ -22,5 +22,14 @@ async def ping():
     return {"router": "mock1", "status": "ok"}
 
 
+@router.get("/health")
+async def health():
+    return {
+        "router": "mock1",
+        "status": "ok",
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+    }
+
+
 app = FastAPI(title="Mock Router One")
 app.include_router(router)

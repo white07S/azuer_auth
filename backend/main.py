@@ -11,6 +11,7 @@ import json
 import logging
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -176,6 +177,43 @@ def stop_all_routers() -> None:
     ROUTER_PROCESSES.clear()
 
 
+def wait_for_routers_ready(timeout: float = 30.0, interval: float = 0.5) -> None:
+    """
+    Block until all routers respond successfully on /health or timeout.
+
+    Raises RuntimeError if any router fails to become healthy in time.
+    """
+    pending: Dict[str, Dict[str, Any]] = {
+        r["name"]: r for r in ROUTER_CONFIGS
+    }
+    deadline = time.time() + timeout
+
+    with httpx.Client() as client:
+        while pending and time.time() < deadline:
+            for name in list(pending.keys()):
+                cfg = pending[name]
+                url = f"http://{cfg.get('host', '127.0.0.1')}:{cfg['port']}/health"
+                try:
+                    resp = client.get(url, timeout=2.0)
+                    if resp.status_code == 200:
+                        logger.info("Router %s passed health check", name)
+                        pending.pop(name, None)
+                except Exception as exc:
+                    logger.debug(
+                        "Router %s health check failed: %s",
+                        name,
+                        exc,
+                    )
+
+            if pending:
+                time.sleep(interval)
+
+    if pending:
+        raise RuntimeError(
+            "Routers failed health checks: " + ", ".join(sorted(pending.keys()))
+        )
+
+
 def _get_router_for_path(path: str) -> Tuple[Optional[Dict[str, Any]], str]:
     """
     Determine which router should handle a given path.
@@ -336,6 +374,12 @@ if __name__ == "__main__":
     # When invoked as a script, start all routers and then the main router process.
     start_all_routers()
     try:
+        try:
+            wait_for_routers_ready()
+        except RuntimeError as exc:
+            logger.error("Router health checks failed: %s", exc)
+            raise SystemExit(1)
+
         logger.info(
             "Starting main router on %s:%s with %s workers",
             MAIN_CONFIG["host"],
@@ -352,4 +396,3 @@ if __name__ == "__main__":
         )
     finally:
         stop_all_routers()
-

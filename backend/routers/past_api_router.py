@@ -425,6 +425,11 @@ async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "timestamp": datetime.utcnow()}
 
+@router.get("/health")
+async def health_check_root():
+    """Health check endpoint (root path) for router-level checks"""
+    return await health_check()
+
 @router.get("/api/debug/headers")
 async def debug_headers(request: Request):
     """Debug endpoint to see what headers are being received"""
