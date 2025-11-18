@@ -22,11 +22,8 @@ import uvicorn
 
 BASE_DIR = Path(__file__).resolve().parent
 ROUTERS_CONFIG_PATH = BASE_DIR / "routers" / "config.json"
+LOGGING_CONFIG_PATH = BASE_DIR / "logging" / "log_config.json"
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
 logger = logging.getLogger("main-router")
 
 
@@ -128,11 +125,13 @@ def _start_router_process(router_cfg: Dict[str, Any]) -> None:
         "uvicorn",
         router_path,
         "--host",
-        host,
++        host,
         "--port",
         port,
         "--log-level",
         router_cfg.get("log_level", "info"),
+        "--log-config",
+        str(LOGGING_CONFIG_PATH),
     ]
 
     # Allow additional uvicorn CLI arguments via config.
@@ -393,6 +392,7 @@ if __name__ == "__main__":
             workers=int(MAIN_CONFIG.get("workers", 4)),
             reload=bool(MAIN_CONFIG.get("reload", False)),
             log_level=str(MAIN_CONFIG.get("log_level", "info")),
+            log_config=str(LOGGING_CONFIG_PATH),
         )
     finally:
         stop_all_routers()
