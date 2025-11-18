@@ -5,10 +5,13 @@ This process:
 - Reads router definitions from routers/config.json
 - Starts each router as its own uvicorn process
 - Runs a FastAPI gateway that proxies requests to routers based on path prefix
+  for both HTTP and WebSocket connections.
 """
+import asyncio
 import importlib
 import json
 import logging
+import logging.config
 import subprocess
 import sys
 import time
@@ -16,9 +19,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response
 import uvicorn
+import websockets
+from websockets.exceptions import ConnectionClosed
 
 BASE_DIR = Path(__file__).resolve().parent
 ROUTERS_CONFIG_PATH = BASE_DIR / "routers" / "config.json"
@@ -60,6 +65,44 @@ def _load_router_config() -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
         raise RuntimeError("No router entries found in router configuration")
 
     return main_cfg, routers
+
+
+def _load_base_log_config() -> Dict[str, Any]:
+    """Load the base logging configuration used as a template."""
+    if not LOGGING_CONFIG_PATH.exists():
+        raise RuntimeError(f"Logging config not found at {LOGGING_CONFIG_PATH}")
+
+    with LOGGING_CONFIG_PATH.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _build_log_config_for_name(base: Dict[str, Any], filename: str) -> Dict[str, Any]:
+    """Return a copy of base log config with updated log filename."""
+    config = json.loads(json.dumps(base))
+    handlers = config.get("handlers", {})
+    file_handler = handlers.get("file")
+    if file_handler is not None:
+        file_handler["filename"] = filename
+    return config
+
+
+def _ensure_router_log_config(router_name: str, base_log_config: Dict[str, Any]) -> Path:
+    """
+    Ensure a per-router log config file exists and return its path.
+
+    The log file will be logging/<router_name>.log under BASE_DIR.
+    """
+    log_dir = BASE_DIR / "logging"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = str(log_dir / f"{router_name}.log")
+    router_log_config = _build_log_config_for_name(base_log_config, filename)
+
+    config_path = log_dir / f"log_config_{router_name}.json"
+    with config_path.open("w", encoding="utf-8") as f:
+        json.dump(router_log_config, f)
+
+    return config_path
 
 
 def _normalise_prefix(prefix: Optional[str]) -> str:
@@ -106,7 +149,7 @@ for router_cfg in ROUTER_CONFIGS:
 ROUTER_PROCESSES: Dict[str, subprocess.Popen] = {}
 
 
-def _start_router_process(router_cfg: Dict[str, Any]) -> None:
+def _start_router_process(router_cfg: Dict[str, Any], base_log_config: Dict[str, Any]) -> None:
     """Start a single router as a separate uvicorn process."""
     name = router_cfg["name"]
     if name in ROUTER_PROCESSES and ROUTER_PROCESSES[name].poll() is None:
@@ -119,19 +162,25 @@ def _start_router_process(router_cfg: Dict[str, Any]) -> None:
 
     extra_args = router_cfg.get("uvicorn_args", [])
 
+    # Per-router logging config file and log file.
+    router_log_config_path = _ensure_router_log_config(
+        name,
+        base_log_config,
+    )
+
     cmd: List[str] = [
         sys.executable,
         "-m",
         "uvicorn",
         router_path,
         "--host",
-+        host,
+        host,
         "--port",
         port,
         "--log-level",
         router_cfg.get("log_level", "info"),
         "--log-config",
-        str(LOGGING_CONFIG_PATH),
+        str(router_log_config_path),
     ]
 
     # Allow additional uvicorn CLI arguments via config.
@@ -152,10 +201,10 @@ def _start_router_process(router_cfg: Dict[str, Any]) -> None:
     ROUTER_PROCESSES[name] = process
 
 
-def start_all_routers() -> None:
+def start_all_routers(base_log_config: Dict[str, Any]) -> None:
     """Start all configured routers."""
     for router_cfg in ROUTER_CONFIGS:
-        _start_router_process(router_cfg)
+        _start_router_process(router_cfg, base_log_config)
 
 
 def stop_all_routers() -> None:
@@ -369,9 +418,114 @@ async def proxy_request(full_path: str, request: Request) -> Response:
     )
 
 
+@app.websocket("/{full_path:path}")
+async def websocket_proxy(full_path: str, websocket: WebSocket) -> None:
+    """
+    Proxy WebSocket connections to the appropriate router based on path prefix.
+
+    The same prefix logic as HTTP routing is applied:
+    - /mock1/... -> mock1 router with trimmed path
+    - /mock2/... -> mock2 router with trimmed path
+    - everything else -> default router (e.g., auth-api)
+    """
+    path = "/" + full_path
+    router_cfg, target_path = _get_router_for_path(path)
+
+    await websocket.accept()
+
+    if router_cfg is None:
+        await websocket.close(code=1008)
+        return
+
+    host = router_cfg.get("host", "127.0.0.1")
+    port = router_cfg["port"]
+    query = websocket.url.query
+
+    upstream_url = f"ws://{host}:{port}{target_path}"
+    if query:
+        upstream_url = f"{upstream_url}?{query}"
+
+    # Forward headers such as subprotocols to upstream.
+    extra_headers = dict(websocket.headers)
+    extra_headers["host"] = f"{host}:{port}"
+
+    logger.info(
+        "Proxying WebSocket %s to %s",
+        path,
+        upstream_url,
+    )
+
+    try:
+        async with websockets.connect(
+            upstream_url,
+            extra_headers=extra_headers,
+        ) as upstream:
+
+            async def client_to_upstream() -> None:
+                try:
+                    while True:
+                        message = await websocket.receive()
+                        message_type = message.get("type")
+
+                        if message_type == "websocket.disconnect":
+                            await upstream.close()
+                            break
+
+                        text_data = message.get("text")
+                        if text_data is not None:
+                            await upstream.send(text_data)
+                            continue
+
+                        bytes_data = message.get("bytes")
+                        if bytes_data is not None:
+                            await upstream.send(bytes_data)
+                except WebSocketDisconnect:
+                    await upstream.close()
+
+            async def upstream_to_client() -> None:
+                try:
+                    while True:
+                        data = await upstream.recv()
+                        if isinstance(data, str):
+                            await websocket.send_text(data)
+                        else:
+                            await websocket.send_bytes(data)
+                except ConnectionClosed:
+                    await websocket.close()
+
+            sender = asyncio.create_task(client_to_upstream())
+            receiver = asyncio.create_task(upstream_to_client())
+
+            done, pending = await asyncio.wait(
+                {sender, receiver},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            for task in pending:
+                task.cancel()
+
+    except Exception as exc:
+        logger.error(
+            "Error proxying WebSocket for %s to router %s: %s",
+            path,
+            router_cfg["name"] if router_cfg else "unknown",
+            exc,
+        )
+        with contextlib.suppress(Exception):
+            await websocket.close(code=1011)
+
+
 if __name__ == "__main__":
     # When invoked as a script, start all routers and then the main router process.
-    start_all_routers()
+    # Configure logging for the main process.
+    base_log_config = _load_base_log_config()
+    main_log_dir = BASE_DIR / "logging"
+    main_log_dir.mkdir(parents=True, exist_ok=True)
+    main_log_filename = str(main_log_dir / "main.log")
+    main_log_config = _build_log_config_for_name(base_log_config, main_log_filename)
+    logging.config.dictConfig(main_log_config)
+
+    start_all_routers(base_log_config)
     try:
         try:
             wait_for_routers_ready()
@@ -392,7 +546,7 @@ if __name__ == "__main__":
             workers=int(MAIN_CONFIG.get("workers", 4)),
             reload=bool(MAIN_CONFIG.get("reload", False)),
             log_level=str(MAIN_CONFIG.get("log_level", "info")),
-            log_config=str(LOGGING_CONFIG_PATH),
+            log_config=main_log_config,
         )
     finally:
         stop_all_routers()
