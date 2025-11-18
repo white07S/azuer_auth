@@ -1,14 +1,14 @@
 from datetime import datetime
 
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 
 # Prefix can be resolved from here if not specified in config.json
 ROUTER_PREFIX = "/mock2"
 
-app = FastAPI(title="Mock Router Two")
+router = APIRouter()
 
 
-@app.get("/")
+@router.get("/")
 async def root():
     return {
         "router": "mock2",
@@ -17,7 +17,10 @@ async def root():
     }
 
 
-@app.get("/status")
+@router.get("/status")
 async def status():
     return {"router": "mock2", "status": "green"}
 
+
+app = FastAPI(title="Mock Router Two")
+app.include_router(router)
