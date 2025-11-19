@@ -4,10 +4,8 @@ Main router entrypoint.
 This process:
 - Reads router definitions from routers/config.json
 - Starts each router as its own uvicorn process
-- Runs a FastAPI gateway that proxies requests to routers based on path prefix
-  for both HTTP and WebSocket connections.
+- Runs a FastAPI gateway that proxies HTTP requests to routers based on path prefix.
 """
-import asyncio
 import importlib
 import json
 import logging
@@ -19,11 +17,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 import uvicorn
-import websockets
-from websockets.exceptions import ConnectionClosed
 
 BASE_DIR = Path(__file__).resolve().parent
 ROUTERS_CONFIG_PATH = BASE_DIR / "routers" / "config.json"
@@ -416,103 +412,6 @@ async def proxy_request(full_path: str, request: Request) -> Response:
         headers=response_headers,
         media_type=upstream_response.headers.get("content-type"),
     )
-
-
-@app.websocket("/{full_path:path}")
-async def websocket_proxy(full_path: str, websocket: WebSocket) -> None:
-    """
-    Proxy WebSocket connections to the appropriate router based on path prefix.
-
-    The same prefix logic as HTTP routing is applied:
-    - /mock1/... -> mock1 router with trimmed path
-    - /mock2/... -> mock2 router with trimmed path
-    - everything else -> default router (e.g., auth-api)
-    """
-    path = "/" + full_path
-    router_cfg, target_path = _get_router_for_path(path)
-
-    await websocket.accept()
-
-    if router_cfg is None:
-        await websocket.close(code=1008)
-        return
-
-    host = router_cfg.get("host", "127.0.0.1")
-    port = router_cfg["port"]
-    query = websocket.url.query
-
-    upstream_url = f"ws://{host}:{port}{target_path}"
-    if query:
-        upstream_url = f"{upstream_url}?{query}"
-
-    # Forward headers such as subprotocols to upstream.
-    extra_headers = dict(websocket.headers)
-    extra_headers["host"] = f"{host}:{port}"
-
-    logger.info(
-        "Proxying WebSocket %s to %s",
-        path,
-        upstream_url,
-    )
-
-    try:
-        async with websockets.connect(
-            upstream_url,
-            extra_headers=extra_headers,
-        ) as upstream:
-
-            async def client_to_upstream() -> None:
-                try:
-                    while True:
-                        message = await websocket.receive()
-                        message_type = message.get("type")
-
-                        if message_type == "websocket.disconnect":
-                            await upstream.close()
-                            break
-
-                        text_data = message.get("text")
-                        if text_data is not None:
-                            await upstream.send(text_data)
-                            continue
-
-                        bytes_data = message.get("bytes")
-                        if bytes_data is not None:
-                            await upstream.send(bytes_data)
-                except WebSocketDisconnect:
-                    await upstream.close()
-
-            async def upstream_to_client() -> None:
-                try:
-                    while True:
-                        data = await upstream.recv()
-                        if isinstance(data, str):
-                            await websocket.send_text(data)
-                        else:
-                            await websocket.send_bytes(data)
-                except ConnectionClosed:
-                    await websocket.close()
-
-            sender = asyncio.create_task(client_to_upstream())
-            receiver = asyncio.create_task(upstream_to_client())
-
-            done, pending = await asyncio.wait(
-                {sender, receiver},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-
-            for task in pending:
-                task.cancel()
-
-    except Exception as exc:
-        logger.error(
-            "Error proxying WebSocket for %s to router %s: %s",
-            path,
-            router_cfg["name"] if router_cfg else "unknown",
-            exc,
-        )
-        with contextlib.suppress(Exception):
-            await websocket.close(code=1011)
 
 
 if __name__ == "__main__":
